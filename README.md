@@ -111,6 +111,13 @@ npm install
 npm run dev   # http://localhost:3100
 ```
 
+> **Security note — localhost only.** `NEXT_PUBLIC_ORA_OWNER_TOKEN` is baked into the
+> browser JavaScript bundle and is visible to anyone who can load the page. This is
+> intentionally acceptable for localhost, single-owner use — the owner is the only person
+> who can reach it. **Do not expose this frontend on a hosted site or shared network**
+> without replacing auth. A hosted deployment needs a real login flow: server-side session,
+> HttpOnly cookie, Secure + SameSite=Strict flags, no client-visible secret.
+
 ---
 
 ## Configuration

@@ -57,6 +57,13 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_approvals(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(approvals)").fetchall()}
+    if "approved_by_owner" not in cols:
+        conn.execute("ALTER TABLE approvals ADD COLUMN approved_by_owner INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
+
 def init_db() -> None:
     ledger.init_db()
     policy.init_db()
@@ -76,18 +83,20 @@ def init_db() -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS approvals (
-                id        TEXT PRIMARY KEY,
-                actor_id  TEXT NOT NULL,
-                action    TEXT NOT NULL,
-                args      TEXT NOT NULL,
-                summary   TEXT NOT NULL,
-                reason    TEXT NOT NULL,
-                ledger_id INTEGER NOT NULL,
-                status    TEXT NOT NULL DEFAULT 'pending',
-                created   REAL NOT NULL
+                id                TEXT    PRIMARY KEY,
+                actor_id          TEXT    NOT NULL,
+                action            TEXT    NOT NULL,
+                args              TEXT    NOT NULL,
+                summary           TEXT    NOT NULL,
+                reason            TEXT    NOT NULL,
+                ledger_id         INTEGER NOT NULL,
+                status            TEXT    NOT NULL DEFAULT 'pending',
+                approved_by_owner INTEGER NOT NULL DEFAULT 0,
+                created           REAL    NOT NULL
             )
             """
         )
+        _migrate_approvals(conn)
         # Persistent nonce store: survives restarts, blocks replay attacks.
         conn.execute(
             """
@@ -197,7 +206,7 @@ def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
     if agent and agent["status"] == "revoked":
         rk = risk.score(action, args, "deny")
         entry = ledger.append(actor_id, action, summary, "deny", "blocked",
-                              "Actor is revoked.", risk.category(action), rk)
+                              "Actor is revoked.", risk.category(action), rk, args=args)
         return {"status": "denied", "reason": "That agent has been revoked.",
                 "result": None, "approval_id": None, "ledger_id": entry["id"]}
 
@@ -208,18 +217,18 @@ def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
     if decision in (policy.DENY, policy.HOLD) and mode != policy.ENFORCED:
         result = execute()
         note = f"[{mode}] would {decision} ({reason}). Ran because enforcement is off. Result: {result}"
-        entry = ledger.append(actor_id, action, summary, decision, "executed", note, cat, rk)
+        entry = ledger.append(actor_id, action, summary, decision, "executed", note, cat, rk, args=args)
         return {"status": "executed",
                 "reason": f"(Observed in {mode} mode — this would have been a '{decision}': {reason})",
                 "result": str(result), "approval_id": None, "ledger_id": entry["id"]}
 
     if decision == policy.DENY:
-        entry = ledger.append(actor_id, action, summary, decision, "blocked", reason, cat, rk)
+        entry = ledger.append(actor_id, action, summary, decision, "blocked", reason, cat, rk, args=args)
         return {"status": "denied", "reason": reason,
                 "result": None, "approval_id": None, "ledger_id": entry["id"]}
 
     if decision == policy.HOLD:
-        entry = ledger.append(actor_id, action, summary, decision, "pending", reason, cat, rk)
+        entry = ledger.append(actor_id, action, summary, decision, "pending", reason, cat, rk, args=args)
         approval_id = "apr_" + secrets.token_hex(6)
         with _lock, _connect() as conn:
             conn.execute(
@@ -234,7 +243,7 @@ def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
 
     # allow
     result = execute()
-    entry = ledger.append(actor_id, action, summary, decision, "executed", str(result), cat, rk)
+    entry = ledger.append(actor_id, action, summary, decision, "executed", str(result), cat, rk, args=args)
     return {"status": "executed", "reason": reason, "result": str(result),
             "approval_id": None, "ledger_id": entry["id"]}
 
@@ -242,8 +251,10 @@ def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
 def resolve(approval_id: str, decision: str) -> dict:
     """Approve or deny a held action.
 
-    On approval the policy is RE-EVALUATED (a rule may have changed since the hold) and, if
-    still permitted, the action is re-run through the registered executor.
+    Owner approval is an explicit override — policy is NOT re-evaluated. The owner is the root
+    authority; policy governs autonomous action, not explicit human decisions. Re-checking
+    policy after approval would make the approval queue misleading ("Approve" that can still
+    be denied is not a real approval).
     """
     with _lock, _connect() as conn:
         row = conn.execute(
@@ -263,21 +274,21 @@ def resolve(approval_id: str, decision: str) -> dict:
         ledger.update_outcome(pending["ledger_id"], "denied", "Denied by owner.")
         return {"ok": True, "status": "denied", "action": action, "summary": pending["summary"]}
 
-    redecision, rereason = policy.evaluate(pending["actor_id"], action, args)
-    if redecision == policy.DENY:
-        _close(approval_id, "denied")
-        ledger.update_outcome(pending["ledger_id"], "denied",
-                              f"Approval refused: policy now denies this ({rereason}).")
-        return {"ok": False, "error": f"Policy now blocks this action: {rereason}"}
-
     if _executor is None:
         _close(approval_id, "pending")
         return {"ok": False, "error": "No executor registered to run the action."}
 
+    # Mark owner approval before executing so the record is durable even if execution crashes.
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE approvals SET approved_by_owner = 1 WHERE id = ?", (approval_id,))
+        conn.commit()
+
     try:
         result = _executor(action, args)
         _close(approval_id, "executed")
-        ledger.update_outcome(pending["ledger_id"], "executed", f"Approved by owner. Result: {result}")
+        ledger.update_outcome(pending["ledger_id"], "executed",
+                              f"Approved by owner. Result: {result}",
+                              decision="allowed (owner)")
         return {"ok": True, "status": "executed", "result": str(result),
                 "action": action, "summary": pending["summary"]}
     except Exception as e:

@@ -38,32 +38,61 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_ledger(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(ledger)").fetchall()}
+    if "args_json" not in cols:
+        conn.execute("ALTER TABLE ledger ADD COLUMN args_json TEXT NOT NULL DEFAULT '{}'")
+        conn.commit()
+
+
 def init_db() -> None:
     with _connect() as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS ledger (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts          REAL    NOT NULL,
-                actor_id    TEXT    NOT NULL,
-                action      TEXT    NOT NULL,
-                args_summary TEXT   NOT NULL,
-                decision    TEXT    NOT NULL,
-                status      TEXT    NOT NULL,
-                outcome     TEXT    NOT NULL DEFAULT '',
-                prev_hash   TEXT    NOT NULL,
-                hash        TEXT    NOT NULL,
-                sig         TEXT    NOT NULL DEFAULT '',
-                category    TEXT    NOT NULL DEFAULT '',
-                risk        INTEGER NOT NULL DEFAULT 0
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           REAL    NOT NULL,
+                actor_id     TEXT    NOT NULL,
+                action       TEXT    NOT NULL,
+                args_summary TEXT    NOT NULL,
+                args_json    TEXT    NOT NULL DEFAULT '{}',
+                decision     TEXT    NOT NULL,
+                status       TEXT    NOT NULL,
+                outcome      TEXT    NOT NULL DEFAULT '',
+                prev_hash    TEXT    NOT NULL,
+                hash         TEXT    NOT NULL,
+                sig          TEXT    NOT NULL DEFAULT '',
+                category     TEXT    NOT NULL DEFAULT '',
+                risk         INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        _migrate_ledger(conn)
         conn.commit()
 
 
 def _canonical(entry: dict) -> str:
-    """Stable serialization of the hashable fields, independent of dict ordering."""
+    """Stable serialization for hashing. Covers args_json, category, and risk so those
+    fields carry integrity protection from the moment they are written."""
+    payload = {
+        "action": entry["action"],
+        "actor_id": entry["actor_id"],
+        "args_json": entry.get("args_json", "{}"),
+        "args_summary": entry["args_summary"],
+        "category": entry.get("category", ""),
+        "decision": entry["decision"],
+        "outcome": entry["outcome"],
+        "prev_hash": entry["prev_hash"],
+        "risk": int(entry.get("risk", 0)),
+        "status": entry["status"],
+        "ts": entry["ts"],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _canonical_legacy(entry: dict) -> str:
+    """Hash payload used before the args_json/category/risk expansion. Accepted by
+    verify_chain() for rows written before this patch so existing ledgers stay valid."""
     payload = {
         "ts": entry["ts"],
         "actor_id": entry["actor_id"],
@@ -96,13 +125,13 @@ def _write_anchor(entry_id: int, entry_hash: str) -> None:
 
 def append(actor_id: str, action: str, args_summary: str,
            decision: str, status: str, outcome: str = "",
-           category: str = "", risk: int = 0) -> dict:
+           category: str = "", risk: int = 0, args: dict = None) -> dict:
     """Append a new entry: link it to the chain head, sign it, and anchor it.
 
-    `category` and `risk` are derived metadata for the Trust Center summary. They are stored
-    but intentionally NOT part of the hashed/signed payload - integrity covers the factual
-    record (who did what, and the verdict), not the cosmetic score.
+    `args` is stored as canonical JSON and included in the signed payload.
+    `args_summary` is kept for display. `category` and `risk` are now also signed.
     """
+    args_json_str = json.dumps(args or {}, sort_keys=True, separators=(",", ":"))
     with _lock, _connect() as conn:
         row = conn.execute("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1").fetchone()
         prev_hash = row["hash"] if row else GENESIS_HASH
@@ -112,29 +141,33 @@ def append(actor_id: str, action: str, args_summary: str,
             "actor_id": actor_id,
             "action": action,
             "args_summary": args_summary,
+            "args_json": args_json_str,
             "decision": decision,
             "status": status,
             "outcome": outcome,
             "prev_hash": prev_hash,
+            "category": category,
+            "risk": int(risk),
         }
         entry["hash"] = _compute_hash(entry)
         entry["sig"] = crypto.sign(entry["hash"].encode("utf-8"))
 
         cur = conn.execute(
             """INSERT INTO ledger
-               (ts, actor_id, action, args_summary, decision, status, outcome, prev_hash, hash, sig, category, risk)
-               VALUES (:ts, :actor_id, :action, :args_summary, :decision, :status, :outcome, :prev_hash, :hash, :sig, :category, :risk)""",
-            {**entry, "category": category, "risk": int(risk)},
+               (ts, actor_id, action, args_summary, args_json, decision, status, outcome,
+                prev_hash, hash, sig, category, risk)
+               VALUES (:ts, :actor_id, :action, :args_summary, :args_json, :decision, :status,
+                       :outcome, :prev_hash, :hash, :sig, :category, :risk)""",
+            entry,
         )
         conn.commit()
         entry["id"] = cur.lastrowid
-        entry["category"], entry["risk"] = category, int(risk)
 
     _write_anchor(entry["id"], entry["hash"])
     return entry
 
 
-def update_outcome(entry_id: int, status: str, outcome: str) -> None:
+def update_outcome(entry_id: int, status: str, outcome: str, decision: str = "n/a") -> None:
     """Append a NEW entry recording the resolution of a prior held action.
 
     We never mutate existing rows - that would break the chain by design. Instead a
@@ -144,7 +177,7 @@ def update_outcome(entry_id: int, status: str, outcome: str) -> None:
         actor_id="ora.system",
         action="resolve",
         args_summary=f"resolves ledger entry #{entry_id}",
-        decision="n/a",
+        decision=decision,
         status=status,
         outcome=outcome,
         category="governance",
@@ -170,10 +203,24 @@ def sum_today(action: str, fields=("amount", "cost", "price", "total")) -> float
     total = 0.0
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT args_summary FROM ledger WHERE action = ? AND status = 'executed' AND ts >= ?",
+            "SELECT args_summary, args_json FROM ledger WHERE action = ? AND status = 'executed' AND ts >= ?",
             (action, start),
         ).fetchall()
     for r in rows:
+        parsed = None
+        try:
+            parsed = json.loads(r["args_json"] or "{}") or None
+        except (ValueError, TypeError):
+            pass
+        if parsed:
+            for field in fields:
+                if field in parsed:
+                    try:
+                        total += float(parsed[field])
+                    except (ValueError, TypeError):
+                        pass
+                    break
+            continue
         for part in str(r["args_summary"]).split(","):
             if "=" not in part:
                 continue
@@ -195,7 +242,7 @@ def summary(days: int = 7) -> dict:
     start = time.time() - days * 86400
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT action, category, risk, decision, status, args_summary "
+            "SELECT action, category, risk, decision, status, args_summary, args_json "
             "FROM ledger WHERE ts >= ?", (start,)
         ).fetchall()
 
@@ -216,14 +263,30 @@ def summary(days: int = 7) -> dict:
         elif status == "executed":
             executed += 1
         if r["action"] == "make_purchase" and status == "executed":
-            for part in str(r["args_summary"]).split(","):
-                k, _, v = part.partition("=")
-                if k.strip() in ("amount", "cost", "price", "total"):
-                    try:
-                        financial_total += float(v.strip())
-                    except ValueError:
-                        pass
-                    break
+            parsed = None
+            try:
+                parsed = json.loads(r["args_json"] or "{}") or None
+            except (ValueError, TypeError):
+                pass
+            found = False
+            if parsed:
+                for field in ("amount", "cost", "price", "total"):
+                    if field in parsed:
+                        try:
+                            financial_total += float(parsed[field])
+                        except (ValueError, TypeError):
+                            pass
+                        found = True
+                        break
+            if not found:
+                for part in str(r["args_summary"]).split(","):
+                    k, _, v = part.partition("=")
+                    if k.strip() in ("amount", "cost", "price", "total"):
+                        try:
+                            financial_total += float(v.strip())
+                        except ValueError:
+                            pass
+                        break
 
     return {
         "window_days": days,
@@ -254,8 +317,11 @@ def verify_chain() -> dict:
             return {"valid": False, "checked": len(rows), "broken_at": entry["id"],
                     "reason": "Hash chain link broken."}
         if _compute_hash(entry) != entry["hash"]:
-            return {"valid": False, "checked": len(rows), "broken_at": entry["id"],
-                    "reason": "Entry contents do not match its hash."}
+            # Accept rows written before the args_json/category/risk expansion.
+            legacy = hashlib.sha256(_canonical_legacy(entry).encode("utf-8")).hexdigest()
+            if legacy != entry["hash"]:
+                return {"valid": False, "checked": len(rows), "broken_at": entry["id"],
+                        "reason": "Entry contents do not match its hash."}
         if not entry.get("sig") or not crypto.verify(entry["hash"].encode("utf-8"), entry["sig"]):
             return {"valid": False, "checked": len(rows), "broken_at": entry["id"],
                     "reason": "Entry signature is missing or invalid (forged)."}
