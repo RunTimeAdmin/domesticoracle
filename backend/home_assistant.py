@@ -72,22 +72,30 @@ def _service_for(domain: str, action: str) -> str | None:
 
 
 def _match_entity(devices: list[dict], device: str) -> dict | None:
-    """Resolve a spoken device name to a single entity.
+    """Resolve a spoken device name to a single entity in one pass.
 
-    Tries exact entity_id, then exact friendly-name, then a unique substring.
+    Priority: exact entity_id > exact friendly name > unique substring match.
     """
     q = (device or "").strip().lower()
     if not q:
         return None
+    exact_id = exact_name = None
+    substring_hits: list[dict] = []
     for d in devices:
-        if d["entity_id"].lower() == q:
-            return d
-    for d in devices:
-        if d["name"].lower() == q:
-            return d
-    hits = [d for d in devices
-            if q in d["name"].lower() or q in d["entity_id"].lower()]
-    return hits[0] if len(hits) == 1 else None
+        eid = d["entity_id"].lower()
+        name = d["name"].lower()
+        if eid == q:
+            exact_id = d
+            break
+        if name == q:
+            exact_name = d
+        elif q in name or q in eid:
+            substring_hits.append(d)
+    if exact_id:
+        return exact_id
+    if exact_name:
+        return exact_name
+    return substring_hits[0] if len(substring_hits) == 1 else None
 
 
 # ----------------------------------------------------------------- live backend

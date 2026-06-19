@@ -25,8 +25,8 @@ import ledger
 import policy
 import crypto
 import risk
+from db import connect as _connect
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "oracle.db")
 _lock = threading.Lock()
 
 # Re-execution hook for approved actions, registered by the tools layer (avoids a circular
@@ -49,12 +49,6 @@ _DEFAULT_AGENTS = [
     ("ora.mcp",           "MCP Gateway",               "internal"),
     ("oracle.agent",      "Domestic Oracle Agent",     "internal"),
 ]
-
-
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def _migrate_approvals(conn: sqlite3.Connection) -> None:
@@ -97,6 +91,10 @@ def init_db() -> None:
             """
         )
         _migrate_approvals(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_approvals_status_created "
+            "ON approvals(status, created)"
+        )
         # Persistent nonce store: survives restarts, blocks replay attacks.
         conn.execute(
             """

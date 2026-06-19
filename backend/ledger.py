@@ -24,18 +24,15 @@ Storage is a single SQLite table; volume is human-scale (actions per day).
 import os, json, sqlite3, hashlib, time, threading
 
 import crypto
+from db import connect as _connect
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "oracle.db")
 ANCHOR_FILE = os.path.join(os.path.dirname(__file__), "oracle_keys", "anchor.log")
 GENESIS_HASH = "0" * 64
 
 _lock = threading.Lock()
-
-
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+_verify_lock = threading.Lock()
+_verify_checkpoint: dict = {"id": 0, "hash": GENESIS_HASH}
 
 
 def _migrate_ledger(conn: sqlite3.Connection) -> None:
@@ -68,6 +65,11 @@ def init_db() -> None:
             """
         )
         _migrate_ledger(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ledger_action_status_ts "
+            "ON ledger(action, status, ts)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_ts ON ledger(ts)")
         conn.commit()
 
 
@@ -196,31 +198,27 @@ def list_entries(limit: int = 100) -> list[dict]:
 def sum_today(action: str, fields=("amount", "cost", "price", "total")) -> float:
     """Total of a numeric arg across today's EXECUTED entries for an action.
 
-    Used by the policy engine for per-day spend caps. Reads from the args_summary, which is
-    a 'k=v, k=v' string; tolerant of formatting.
+    Used by the policy engine for per-day spend caps.
+    Fast path: SQL JSON1 aggregation (single in-engine SUM, no per-row Python).
+    Fallback: string parsing for legacy rows without structured args.
     """
     start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
-    total = 0.0
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT args_summary, args_json FROM ledger WHERE action = ? AND status = 'executed' AND ts >= ?",
-            (action, start),
-        ).fetchall()
+    conn = _connect()
+    primary = fields[0]
+    row = conn.execute(
+        "SELECT COALESCE(SUM(CAST(json_extract(args_json,?) AS REAL)), 0) "
+        "FROM ledger WHERE action=? AND status='executed' AND ts>=? "
+        "AND json_extract(args_json,?) IS NOT NULL",
+        (f"$.{primary}", action, start, f"$.{primary}"),
+    ).fetchone()
+    total = float(row[0] or 0.0)
+    rows = conn.execute(
+        "SELECT args_summary FROM ledger "
+        "WHERE action=? AND status='executed' AND ts>=? "
+        "AND (args_json IS NULL OR args_json='{}')",
+        (action, start),
+    ).fetchall()
     for r in rows:
-        parsed = None
-        try:
-            parsed = json.loads(r["args_json"] or "{}") or None
-        except (ValueError, TypeError):
-            pass
-        if parsed:
-            for field in fields:
-                if field in parsed:
-                    try:
-                        total += float(parsed[field])
-                    except (ValueError, TypeError):
-                        pass
-                    break
-            continue
         for part in str(r["args_summary"]).split(","):
             if "=" not in part:
                 continue
@@ -302,32 +300,51 @@ def summary(days: int = 7) -> dict:
     }
 
 
-def verify_chain() -> dict:
-    """Verify the hash links AND the signature of every entry.
+def verify_chain(full: bool = False) -> dict:
+    """Verify hash links and Ed25519 signatures.
 
-    Returns {"valid", "checked", "broken_at", "reason"}.
+    By default resumes from the last verified checkpoint, so repeated calls
+    are O(new entries) rather than O(N). Pass full=True to re-scan from
+    genesis (e.g. after suspecting tampering of old entries).
+
+    Accepts both the current canonical format and the legacy format (rows
+    written before the args_json/category/risk expansion).
     """
-    with _connect() as conn:
-        rows = conn.execute("SELECT * FROM ledger ORDER BY id ASC").fetchall()
+    with _verify_lock:
+        conn = _connect()
+        start_id = 0 if full else _verify_checkpoint["id"]
+        prev_hash = GENESIS_HASH if full else _verify_checkpoint["hash"]
 
-    prev_hash = GENESIS_HASH
-    for r in rows:
-        entry = dict(r)
-        if entry["prev_hash"] != prev_hash:
-            return {"valid": False, "checked": len(rows), "broken_at": entry["id"],
-                    "reason": "Hash chain link broken."}
-        if _compute_hash(entry) != entry["hash"]:
-            # Accept rows written before the args_json/category/risk expansion.
-            legacy = hashlib.sha256(_canonical_legacy(entry).encode("utf-8")).hexdigest()
-            if legacy != entry["hash"]:
-                return {"valid": False, "checked": len(rows), "broken_at": entry["id"],
-                        "reason": "Entry contents do not match its hash."}
-        if not entry.get("sig") or not crypto.verify(entry["hash"].encode("utf-8"), entry["sig"]):
-            return {"valid": False, "checked": len(rows), "broken_at": entry["id"],
-                    "reason": "Entry signature is missing or invalid (forged)."}
-        prev_hash = entry["hash"]
+        rows = conn.execute(
+            "SELECT * FROM ledger WHERE id > ? ORDER BY id ASC", (start_id,)
+        ).fetchall()
 
-    return {"valid": True, "checked": len(rows), "broken_at": None, "reason": "Chain intact."}
+        checked = start_id
+        for r in rows:
+            entry = dict(r)
+            if entry["prev_hash"] != prev_hash:
+                return {"valid": False, "checked": checked,
+                        "broken_at": entry["id"], "reason": "Hash chain link broken."}
+            if _compute_hash(entry) != entry["hash"]:
+                legacy = hashlib.sha256(_canonical_legacy(entry).encode("utf-8")).hexdigest()
+                if legacy != entry["hash"]:
+                    return {"valid": False, "checked": checked,
+                            "broken_at": entry["id"],
+                            "reason": "Entry contents do not match its hash."}
+            if not entry.get("sig") or not crypto.verify(
+                entry["hash"].encode("utf-8"), entry["sig"]
+            ):
+                return {"valid": False, "checked": checked,
+                        "broken_at": entry["id"],
+                        "reason": "Entry signature is missing or invalid (forged)."}
+            prev_hash = entry["hash"]
+            checked = entry["id"]
+
+        _verify_checkpoint["id"] = checked
+        _verify_checkpoint["hash"] = prev_hash
+
+    total = conn.execute("SELECT COUNT(*) c FROM ledger").fetchone()["c"]
+    return {"valid": True, "checked": total, "broken_at": None, "reason": "Chain intact."}
 
 
 def verify_anchor() -> dict:
@@ -361,9 +378,9 @@ def verify_anchor() -> dict:
     return {"anchored": True, "consistent": True, "reason": "Matches last anchor."}
 
 
-def integrity() -> dict:
+def integrity(full: bool = False) -> dict:
     """Combined verdict used by the API and Trust Center badge."""
-    chain = verify_chain()
+    chain = verify_chain(full=full)
     anchor = verify_anchor()
     valid = chain["valid"] and anchor["consistent"]
     return {

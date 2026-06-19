@@ -32,7 +32,7 @@ Trust layer (all routes from Ora, unchanged):
 """
 import os, json, sys
 from pathlib import Path
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException
@@ -62,8 +62,32 @@ auth.owner_token()
 from domestic_oracle.agent import get_client
 from domestic_oracle.stream import deerflow_to_sse
 
+from anthropic import Anthropic as _Anthropic
+
 MAX_HISTORY = 20
-_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
+MAX_USERS = 500
+
+_history: OrderedDict[str, deque] = OrderedDict()
+_claude: "_Anthropic | None" = None
+
+
+def _get_history(user_id: str) -> deque:
+    if user_id in _history:
+        _history.move_to_end(user_id)
+    else:
+        if len(_history) >= MAX_USERS:
+            _history.popitem(last=False)  # evict LRU
+        _history[user_id] = deque(maxlen=MAX_HISTORY)
+    return _history[user_id]
+
+
+def _get_claude() -> "_Anthropic | None":
+    global _claude
+    if _claude is None:
+        key = os.getenv("ANTHROPIC_API_KEY")
+        if key:
+            _claude = _Anthropic(api_key=key)
+    return _claude
 
 app = FastAPI(title="Domestic Oracle", version="1.0.0")
 
@@ -127,7 +151,7 @@ def health():
 
 @app.get("/history/{user_id}")
 def get_history(user_id: str):
-    return {"user_id": user_id, "messages": list(_history[user_id])}
+    return {"user_id": user_id, "messages": list(_get_history(user_id))}
 
 
 @app.delete("/memory/{user_id}")
@@ -136,7 +160,7 @@ def wipe_memory(user_id: str, _owner: bool = Depends(require_owner)):
     from deerflow.agents.memory.storage import get_memory_storage
     storage = get_memory_storage()
     storage.save({}, user_id=user_id)
-    _history[user_id].clear()
+    _get_history(user_id).clear()
     return {"status": "wiped", "user_id": user_id}
 
 
@@ -147,7 +171,7 @@ async def chat(req: ChatRequest):
     if not message:
         return JSONResponse({"error": "empty message"}, status_code=400)
 
-    _history[user_id].append({"role": "user", "content": message})
+    _get_history(user_id).append({"role": "user", "content": message})
     thread_id = f"eb-{user_id}"
 
     async def event_stream():
@@ -167,7 +191,7 @@ async def chat(req: ChatRequest):
 
         full_reply = "".join(full_reply_parts)
         if full_reply:
-            _history[user_id].append({"role": "assistant", "content": full_reply})
+            _get_history(user_id).append({"role": "assistant", "content": full_reply})
 
         yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -185,8 +209,8 @@ def get_ledger(limit: int = 100):
 
 
 @app.get("/ledger/verify")
-def verify_ledger():
-    return ledger.integrity()
+def verify_ledger(full: bool = False):
+    return ledger.integrity(full=full)
 
 
 @app.get("/ledger/summary")
@@ -219,12 +243,11 @@ def create_policy(req: PolicyRequest, _owner: bool = Depends(require_owner)):
         saved = policy.add_policy(req.rule_type, req.params, label=req.label or "")
         return {"policy": saved}
     if req.text:
-        from anthropic import Anthropic
-        key = os.getenv("ANTHROPIC_API_KEY")
-        if not key:
+        claude = _get_claude()
+        if not claude:
             return JSONResponse({"error": "ANTHROPIC_API_KEY not set"}, status_code=500)
         try:
-            rule = policy.parse_policy(req.text, Anthropic(api_key=key))
+            rule = policy.parse_policy(req.text, claude)
             saved = policy.add_policy(rule["rule_type"], rule["params"],
                                       label=rule.get("label", req.text), source="manual")
             return {"policy": saved}

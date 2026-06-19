@@ -14,7 +14,10 @@ export default function ChatWindow({ messages, streamingId }: ChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const id = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(id);
   }, [messages, streamingId]);
 
   if (messages.length === 0) {

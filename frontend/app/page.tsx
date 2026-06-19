@@ -25,8 +25,8 @@ export default function Home() {
     (text: string) => {
       if (streamingId) return;
 
-      const userMsg: Message = { id: `u_${Date.now()}`, role: "user", content: text };
-      const oraId = `o_${Date.now()}`;
+      const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
+      const oraId = crypto.randomUUID();
       const oraMsg: Message = { id: oraId, role: "ora", content: "" };
 
       setMessages((prev) => [...prev, userMsg, oraMsg]);
@@ -35,28 +35,41 @@ export default function Home() {
       const controller = new AbortController();
       abortRef.current = controller;
 
+      let pending = "";
+      let raf: number | null = null;
+
+      const flush = () => {
+        const delta = pending;
+        pending = "";
+        raf = null;
+        if (!delta) return;
+        setMessages((prev) =>
+          prev.map((m) => (m.id === oraId ? { ...m, content: m.content + delta } : m))
+        );
+      };
+
       streamChat(
         userId,
         text,
         {
           onText: (delta) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === oraId ? { ...m, content: m.content + delta } : m
-              )
-            );
+            pending += delta;
+            if (raf === null) raf = requestAnimationFrame(flush);
           },
           onApproval: (_approval: ApprovalEvent) => {
-            // A guarded action was held. Nudge the Trust Center to refresh and badge it.
             setPendingCount((c) => c + 1);
             setTrustRefresh((k) => k + 1);
           },
           onDone: () => {
+            if (raf !== null) cancelAnimationFrame(raf);
+            flush();
             setStreamingId(null);
             abortRef.current = null;
             setTrustRefresh((k) => k + 1);
           },
           onError: (msg) => {
+            if (raf !== null) cancelAnimationFrame(raf);
+            flush();
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === oraId

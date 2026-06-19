@@ -40,15 +40,16 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
   const [newPolicy, setNewPolicy] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [verifying, setVerifying] = useState(false);
+
   const reload = useCallback(async () => {
     try {
-      const [p, l, c, pol, ag, m, s, dev] = await Promise.all([
-        getApprovals(), getLedger(), verifyLedger(), getPolicies(), getAgents(),
+      const [p, l, pol, ag, m, s, dev] = await Promise.all([
+        getApprovals(), getLedger(), getPolicies(), getAgents(),
         getMode(), getSummary(), getDevices(),
       ]);
       setPending(p);
       setLedger(l);
-      setChain(c);
       setPolicies(pol);
       setAgents(ag);
       setModeState(m);
@@ -57,6 +58,18 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
       setHaLive(dev.configured);
     } catch {
       // backend not reachable; leave panels empty
+    }
+  }, []);
+
+  const verifyChain = useCallback(async () => {
+    setVerifying(true);
+    try {
+      const c = await verifyLedger();
+      setChain(c);
+    } catch {
+      // ignore
+    } finally {
+      setVerifying(false);
     }
   }, []);
 
@@ -75,7 +88,9 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
   };
 
   useEffect(() => {
-    if (open) reload();
+    if (!open) return;
+    const t = setTimeout(reload, 300);
+    return () => clearTimeout(t);
   }, [open, refreshKey, reload]);
 
   const submitPolicy = async () => {
@@ -159,6 +174,8 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
                   mode={mode}
                   summary={summary}
                   onChangeMode={changeMode}
+                  onVerify={verifyChain}
+                  verifying={verifying}
                 />
               )}
               {tab === "devices" && (
@@ -302,32 +319,45 @@ function Stat({ value, label, tone }: { value: number; label: string; tone?: "am
 }
 
 function LedgerTab({
-  entries, chain, mode, summary, onChangeMode,
+  entries, chain, mode, summary, onChangeMode, onVerify, verifying,
 }: {
   entries: LedgerEntry[];
   chain: ChainStatus | null;
   mode: PolicyMode | null;
   summary: LedgerSummary | null;
   onChangeMode: (m: PolicyMode) => void;
+  onVerify: () => void;
+  verifying: boolean;
 }) {
   return (
     <div className="space-y-3">
       <ModeControl mode={mode} onChange={onChangeMode} />
       {summary && <SummaryCard summary={summary} />}
-      {chain && (
-        <div
-          className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium ${
-            chain.valid
-              ? "bg-emerald-50 text-emerald-700"
-              : "bg-red-50 text-red-700"
-          }`}
+      <div className="flex items-center gap-2">
+        {chain ? (
+          <div
+            className={`flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium ${
+              chain.valid ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+            }`}
+          >
+            <span className={`h-2 w-2 rounded-full ${chain.valid ? "bg-emerald-500" : "bg-red-500"}`} />
+            {chain.valid
+              ? `Verified · ${chain.checked} entries, chain intact`
+              : `Tampered · break at entry #${chain.broken_at}`}
+          </div>
+        ) : (
+          <div className="flex-1 rounded-xl bg-charcoal-soft/5 px-3 py-2 text-sm text-charcoal-soft">
+            Chain not yet verified
+          </div>
+        )}
+        <button
+          onClick={onVerify}
+          disabled={verifying}
+          className="shrink-0 rounded-full border border-charcoal-soft/30 px-3 py-1.5 text-xs font-medium text-charcoal-soft hover:bg-charcoal-soft/5 disabled:opacity-50"
         >
-          <span className={`h-2 w-2 rounded-full ${chain.valid ? "bg-emerald-500" : "bg-red-500"}`} />
-          {chain.valid
-            ? `Verified · ${chain.checked} entries, chain intact`
-            : `Tampered · break detected at entry #${chain.broken_at}`}
-        </div>
-      )}
+          {verifying ? "Verifying…" : "Verify"}
+        </button>
+      </div>
       {entries.length === 0 ? (
         <Empty text="No activity yet." />
       ) : (

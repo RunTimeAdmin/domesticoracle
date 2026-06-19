@@ -20,18 +20,14 @@ Rule types (Phase 1):
 import os, json, sqlite3, time, datetime, threading
 
 import ledger
+from db import connect as _connect
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "oracle.db")
 _lock = threading.Lock()
+_cache_lock = threading.Lock()
+_policy_cache: list[dict] | None = None
 
 ALLOW, HOLD, DENY = "allow", "hold", "deny"
 _SEVERITY = {ALLOW: 0, HOLD: 1, DENY: 2}
-
-
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 ENFORCED, AUDIT_ONLY, PERMISSIVE = "enforced", "audit_only", "permissive"
@@ -121,6 +117,26 @@ def list_policies() -> list[dict]:
     return out
 
 
+def _cached_policies() -> list[dict]:
+    """Return policies from the in-process cache, populating it on first call.
+
+    Policies change rarely but are evaluated on every guarded action. Caching
+    eliminates per-action DB reads and JSON decoding. Returns copies so callers
+    cannot mutate the cache. Invalidated by add_policy() and delete_policy().
+    """
+    global _policy_cache
+    with _cache_lock:
+        if _policy_cache is None:
+            _policy_cache = list_policies()
+        return [dict(p) for p in _policy_cache]
+
+
+def _invalidate_cache() -> None:
+    global _policy_cache
+    with _cache_lock:
+        _policy_cache = None
+
+
 def add_policy(rule_type: str, params: dict, label: str = "", source: str = "manual") -> dict:
     if rule_type not in {"spend_limit", "time_window", "action_deny", "recipient_block"}:
         raise ValueError(f"Unknown rule_type: {rule_type}")
@@ -131,6 +147,7 @@ def add_policy(rule_type: str, params: dict, label: str = "", source: str = "man
         )
         conn.commit()
         pid = cur.lastrowid
+    _invalidate_cache()
     return {"id": pid, "rule_type": rule_type, "params": params, "label": label, "source": source}
 
 
@@ -138,6 +155,7 @@ def delete_policy(policy_id: int) -> bool:
     with _lock, _connect() as conn:
         cur = conn.execute("DELETE FROM policies WHERE id = ?", (policy_id,))
         conn.commit()
+    _invalidate_cache()
     return cur.rowcount > 0
 
 
@@ -164,7 +182,7 @@ def evaluate(actor_id: str, action: str, args: dict) -> tuple[str, str]:
     decision, reason = ALLOW, "No policy restricts this action."
     now_hour = datetime.datetime.now().hour
 
-    for rule in list_policies():
+    for rule in _cached_policies():
         rtype, p = rule["rule_type"], rule["params"]
         verdict, why = None, None
 
