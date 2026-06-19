@@ -1,19 +1,14 @@
 // REST helpers for Ora's trust layer: ledger, policies, agents, approvals.
+//
+// Auth: all requests include credentials: "include" so the HttpOnly session
+// cookie (set by POST /auth/login) rides along automatically. No token is
+// stored in JS or baked into the bundle.
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
-// The owner token authorizes the control plane (approvals, policy + agent changes). The model
-// never sees this; it's the human's key. For a single-owner home deploy it's provided at build
-// time; a hosted multi-user version would swap this for per-user sessions.
-const OWNER_TOKEN = process.env.NEXT_PUBLIC_ORA_OWNER_TOKEN || "";
-
-function ownerHeaders(): Record<string, string> {
-  return OWNER_TOKEN ? { "X-Ora-Owner": OWNER_TOKEN } : {};
-}
-
 async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`);
+  const res = await fetch(`${API_URL}${path}`, { credentials: "include" });
   if (!res.ok) throw new Error(`GET ${path} failed (${res.status})`);
   return res.json();
 }
@@ -21,7 +16,8 @@ async function getJSON<T>(path: string): Promise<T> {
 async function postJSON<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...ownerHeaders() },
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`POST ${path} failed (${res.status})`);
@@ -31,7 +27,8 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
 async function putJSON<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json", ...ownerHeaders() },
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`PUT ${path} failed (${res.status})`);
@@ -41,10 +38,29 @@ async function putJSON<T>(path: string, body?: unknown): Promise<T> {
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "DELETE",
-    headers: ownerHeaders(),
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`DELETE ${path} failed (${res.status})`);
   return res.json();
+}
+
+export async function login(passphrase: string): Promise<boolean> {
+  const res = await fetch(`${API_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ passphrase }),
+  });
+  return res.ok;
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${API_URL}/auth/logout`, { method: "POST", credentials: "include" });
+}
+
+export async function checkSession(): Promise<boolean> {
+  const res = await fetch(`${API_URL}/auth/session`, { credentials: "include" });
+  return res.ok;
 }
 
 // ---- Types ----
@@ -161,3 +177,13 @@ export const controlDevice = (device: string, action: string) =>
     device,
     action,
   });
+
+export interface DryRunResult {
+  action: string;
+  args: Record<string, unknown>;
+  verdict: "allow" | "hold" | "deny";
+  reason: string;
+}
+
+export const dryrunPolicy = (action: string, args: Record<string, unknown>) =>
+  postJSON<DryRunResult>("/policy/dryrun", { action, args });

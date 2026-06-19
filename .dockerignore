@@ -1,0 +1,36 @@
+# Keep the build context lean: exclude runtime data, secrets, and generated artifacts.
+
+# Secrets — never bake these into an image
+.env
+.env.local
+backend/oracle_keys/
+keys2.txt
+
+# Runtime data — lives in the ora_data named volume, not the image
+backend/oracle.db
+backend/oracle_memory.json
+backend/.deer-flow/
+backend/echobond_memory.json
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+backend/dist/
+backend/build/
+backend/.venv/
+backend/venv/
+
+# Tests (not needed in the image)
+backend/tests/
+
+# Frontend (built by its own service with its own context)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Git / tooling
+.git/
+.claude/
+*.output

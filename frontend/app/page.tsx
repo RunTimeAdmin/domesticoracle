@@ -5,8 +5,10 @@ import ChatWindow from "@/components/ChatWindow";
 import ChatInput from "@/components/ChatInput";
 import OraAvatar from "@/components/OraAvatar";
 import TrustCenter from "@/components/TrustCenter";
+import LoginModal from "@/components/LoginModal";
 import { Message } from "@/components/MessageBubble";
 import { streamChat, getUserId, ApprovalEvent } from "@/lib/stream";
+import { checkSession } from "@/lib/api";
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -15,10 +17,12 @@ export default function Home() {
   const [trustOpen, setTrustOpen] = useState(false);
   const [trustRefresh, setTrustRefresh] = useState(0);
   const [pendingCount, setPendingCount] = useState(0);
+  const [authed, setAuthed] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setUserId(getUserId());
+    checkSession().then(setAuthed);
   }, []);
 
   const handleSend = useCallback(
@@ -123,6 +127,11 @@ export default function Home() {
         open={trustOpen}
         onClose={() => setTrustOpen(false)}
         refreshKey={trustRefresh}
+      />
+
+      <LoginModal
+        open={!authed}
+        onSuccess={() => setAuthed(true)}
       />
     </main>
   );

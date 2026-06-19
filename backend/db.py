@@ -12,7 +12,8 @@ import os
 import sqlite3
 import threading
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "oracle.db")
+_DATA_DIR = os.environ.get("ORA_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(_DATA_DIR, "oracle.db")
 _local = threading.local()
 
 

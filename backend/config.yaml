@@ -9,6 +9,14 @@ token_usage:
 # Model: Claude Sonnet 4
 # ============================================================================
 models:
+  - name: deepseek-chat
+    display_name: DeepSeek V3 (fallback)
+    use: langchain_deepseek:ChatDeepSeek
+    model: deepseek-chat
+    api_key: $DEEPSEEK_API_KEY
+    supports_thinking: false
+    supports_vision: false
+
   - name: claude-sonnet-4
     display_name: Claude Sonnet 4
     use: langchain_anthropic:ChatAnthropic

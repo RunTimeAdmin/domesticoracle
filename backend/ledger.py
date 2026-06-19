@@ -26,8 +26,8 @@ import os, json, sqlite3, hashlib, time, threading
 import crypto
 from db import connect as _connect
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "oracle.db")
-ANCHOR_FILE = os.path.join(os.path.dirname(__file__), "oracle_keys", "anchor.log")
+_DATA_DIR   = os.environ.get("ORA_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+ANCHOR_FILE = os.path.join(_DATA_DIR, "oracle_keys", "anchor.log")
 GENESIS_HASH = "0" * 64
 
 _lock = threading.Lock()
@@ -191,6 +191,15 @@ def list_entries(limit: int = 100) -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM ledger ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def export_chain() -> list[dict]:
+    """Return all entries oldest-first for chain export and independent verification."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ledger ORDER BY id ASC"
         ).fetchall()
     return [dict(r) for r in rows]
 

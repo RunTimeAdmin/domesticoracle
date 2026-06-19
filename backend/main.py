@@ -35,7 +35,7 @@ from pathlib import Path
 from collections import OrderedDict, deque
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Cookie, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -50,11 +50,14 @@ import ledger
 import policy
 import consent
 import auth
+import sessions
 import home_assistant as ha
 from auth import require_owner
 
-# Initialise consent DB (also creates the nonces table) and owner token.
+# Initialise tables and print the owner token on first run.
 consent.init_db()
+sessions.init_table()
+sessions.prune()
 auth.owner_token()
 
 # Import Oracle client singleton AFTER consent is initialised (executor registration
@@ -143,6 +146,44 @@ class AgentActRequest(BaseModel):
     sig: str
 
 
+# ================================================================ Auth
+class LoginRequest(BaseModel):
+    passphrase: str
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest, response: Response):
+    """Exchange the owner passphrase for an HttpOnly session cookie."""
+    if not auth.verify_passphrase(req.passphrase):
+        raise HTTPException(status_code=401, detail="Wrong passphrase.")
+    token = sessions.create()
+    response.set_cookie(
+        "ora_session", token,
+        httponly=True,
+        samesite="strict",
+        secure=auth.HTTPS,
+        max_age=sessions.SESSION_TTL,
+    )
+    return {"ok": True}
+
+
+@app.post("/auth/logout")
+def logout(
+    response: Response,
+    session: str | None = Cookie(default=None, alias="ora_session"),
+):
+    if session:
+        sessions.revoke(session)
+    response.delete_cookie("ora_session", samesite="strict")
+    return {"ok": True}
+
+
+@app.get("/auth/session")
+def session_status(_owner: bool = Depends(require_owner)):
+    """Protected probe: returns 200 if the session cookie is valid, 401 otherwise."""
+    return {"authenticated": True}
+
+
 # ================================================================ Chat
 @app.get("/health")
 def health():
@@ -218,6 +259,21 @@ def ledger_summary(days: int = 7):
     return ledger.summary(days)
 
 
+@app.get("/ledger/export")
+def export_ledger():
+    """Full chain export for independent verification.
+
+    The response includes the server's public key so a skeptic can re-verify
+    every hash and Ed25519 signature without running this server.
+    Feed the output to tools/verify_ledger.py.
+    """
+    return {
+        "public_key_hex": crypto.server_public_key_hex(),
+        "genesis_hash": ledger.GENESIS_HASH,
+        "entries": ledger.export_chain(),
+    }
+
+
 # ================================================================ Policies
 @app.get("/policies")
 def get_policies():
@@ -235,6 +291,22 @@ def set_policy_mode(req: ModeRequest, _owner: bool = Depends(require_owner)):
         return {"mode": policy.set_mode(req.mode)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class DryRunRequest(BaseModel):
+    action: str
+    args: dict = {}
+
+
+@app.post("/policy/dryrun")
+def policy_dryrun(req: DryRunRequest):
+    """Simulate what policy would do for a hypothetical action — no ledger entry, no side effects.
+
+    Lets the owner poke the policy engine ('what would happen if Ora tried to buy a $75 lamp
+    at 2am?') without logging anything or touching the approval queue.
+    """
+    decision, reason = policy.evaluate("ora.dryrun", req.action, req.args)
+    return {"action": req.action, "args": req.args, "verdict": decision, "reason": reason}
 
 
 @app.post("/policies")
@@ -336,7 +408,7 @@ def control_device_endpoint(req: DeviceControlRequest, _owner: bool = Depends(re
 
 # ================================================================ Approvals
 @app.get("/approvals")
-def get_approvals():
+def get_approvals(_owner: bool = Depends(require_owner)):
     return {"approvals": consent.list_pending()}
 
 

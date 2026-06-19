@@ -16,9 +16,10 @@ from cryptography.exceptions import InvalidSignature
 
 REQUEST_TTL_SECONDS = 300  # 5 minutes freshness window
 
-_KEY_DIR  = os.path.join(os.path.dirname(__file__), "oracle_keys")
+_DATA_DIR = os.environ.get("ORA_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+_KEY_DIR  = os.path.join(_DATA_DIR, "oracle_keys")
 _KEY_FILE = os.path.join(_KEY_DIR, "server_ed25519.hex")
-_DB_PATH  = os.path.join(os.path.dirname(__file__), "oracle.db")
+_DB_PATH  = os.path.join(_DATA_DIR, "oracle.db")
 
 _server_key: Ed25519PrivateKey | None = None
 

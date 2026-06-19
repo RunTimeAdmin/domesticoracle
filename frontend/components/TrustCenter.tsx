@@ -5,9 +5,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   getLedger, verifyLedger, getPolicies, addPolicy, deletePolicy,
   getAgents, revokeAgent, restoreAgent, getApprovals, resolveApproval,
-  getMode, setMode, getSummary, getDevices, controlDevice,
+  getMode, setMode, getSummary, getDevices, controlDevice, dryrunPolicy,
   LedgerEntry, ChainStatus, Policy, Agent, PendingApproval,
-  PolicyMode, LedgerSummary, Device,
+  PolicyMode, LedgerSummary, Device, DryRunResult,
 } from "@/lib/api";
 
 type Tab = "pending" | "ledger" | "devices" | "policies" | "agents";
@@ -39,6 +39,8 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
   const [haLive, setHaLive] = useState(false);
   const [newPolicy, setNewPolicy] = useState("");
   const [busy, setBusy] = useState(false);
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
+  const [dryRunBusy, setDryRunBusy] = useState(false);
 
   const [verifying, setVerifying] = useState(false);
 
@@ -189,6 +191,16 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
                   onAdd={submitPolicy}
                   onDelete={async (id) => { await deletePolicy(id); reload(); }}
                   busy={busy}
+                  dryRunResult={dryRunResult}
+                  dryRunBusy={dryRunBusy}
+                  onDryRun={async (action, args) => {
+                    setDryRunBusy(true);
+                    try {
+                      setDryRunResult(await dryrunPolicy(action, args));
+                    } finally {
+                      setDryRunBusy(false);
+                    }
+                  }}
                 />
               )}
               {tab === "agents" && (
@@ -453,8 +465,15 @@ function DevicesTab({
   );
 }
 
+const DRY_RUN_ACTIONS = [
+  { value: "make_purchase", label: "Make purchase" },
+  { value: "control_device", label: "Control device" },
+  { value: "send_message", label: "Send message" },
+];
+
 function PoliciesTab({
   policies, newPolicy, setNewPolicy, onAdd, onDelete, busy,
+  dryRunResult, dryRunBusy, onDryRun,
 }: {
   policies: Policy[];
   newPolicy: string;
@@ -462,13 +481,33 @@ function PoliciesTab({
   onAdd: () => void;
   onDelete: (id: number) => void;
   busy: boolean;
+  dryRunResult: DryRunResult | null;
+  dryRunBusy: boolean;
+  onDryRun: (action: string, args: Record<string, unknown>) => void;
 }) {
+  const [drAction, setDrAction] = useState("make_purchase");
+  const [drAmount, setDrAmount] = useState("75");
+  const [drDevice, setDrDevice] = useState("light.living_room");
+  const [drCommand, setDrCommand] = useState("on");
+  const [drRecipient, setDrRecipient] = useState("boss");
+
+  const buildArgs = (): Record<string, unknown> => {
+    if (drAction === "make_purchase") return { amount: parseFloat(drAmount) || 0, item: "item" };
+    if (drAction === "control_device") return { device: drDevice, command: drCommand };
+    return { recipient: drRecipient, body: "hello" };
+  };
+
+  const verdictColor = dryRunResult
+    ? dryRunResult.verdict === "allow" ? "text-green-700 bg-green-50 border-green-200"
+    : dryRunResult.verdict === "hold"  ? "text-amber-700 bg-amber-50 border-amber-200"
+    :                                    "text-red-700 bg-red-50 border-red-200"
+    : "";
+
   return (
     <div className="space-y-4">
+      {/* Add rule */}
       <div className="rounded-2xl border border-rosegold/30 bg-white/50 p-3">
-        <p className="mb-2 text-xs font-medium text-charcoal-soft">
-          Add a rule in plain language
-        </p>
+        <p className="mb-2 text-xs font-medium text-charcoal-soft">Add a rule in plain language</p>
         <input
           value={newPolicy}
           onChange={(e) => setNewPolicy(e.target.value)}
@@ -484,6 +523,70 @@ function PoliciesTab({
           {busy ? "Adding…" : "Add policy"}
         </button>
       </div>
+
+      {/* Dry-run tester */}
+      <div className="rounded-2xl border border-charcoal-soft/20 bg-white/40 p-3">
+        <p className="mb-2 text-xs font-medium text-charcoal-soft">What would happen if…</p>
+        <div className="flex gap-2">
+          <select
+            value={drAction}
+            onChange={(e) => setDrAction(e.target.value)}
+            className="flex-1 rounded-lg border border-charcoal-soft/20 bg-cream px-2 py-1.5 text-sm text-charcoal focus:outline-none focus:ring-1 focus:ring-rosegold"
+          >
+            {DRY_RUN_ACTIONS.map((a) => (
+              <option key={a.value} value={a.value}>{a.label}</option>
+            ))}
+          </select>
+          {drAction === "make_purchase" && (
+            <input
+              type="number"
+              value={drAmount}
+              onChange={(e) => setDrAmount(e.target.value)}
+              placeholder="$amount"
+              className="w-24 rounded-lg border border-charcoal-soft/20 bg-cream px-2 py-1.5 text-sm text-charcoal focus:outline-none focus:ring-1 focus:ring-rosegold"
+            />
+          )}
+          {drAction === "control_device" && (
+            <>
+              <input
+                value={drDevice}
+                onChange={(e) => setDrDevice(e.target.value)}
+                placeholder="entity_id"
+                className="flex-1 rounded-lg border border-charcoal-soft/20 bg-cream px-2 py-1.5 text-sm text-charcoal focus:outline-none focus:ring-1 focus:ring-rosegold"
+              />
+              <input
+                value={drCommand}
+                onChange={(e) => setDrCommand(e.target.value)}
+                placeholder="command"
+                className="w-20 rounded-lg border border-charcoal-soft/20 bg-cream px-2 py-1.5 text-sm text-charcoal focus:outline-none focus:ring-1 focus:ring-rosegold"
+              />
+            </>
+          )}
+          {drAction === "send_message" && (
+            <input
+              value={drRecipient}
+              onChange={(e) => setDrRecipient(e.target.value)}
+              placeholder="recipient"
+              className="flex-1 rounded-lg border border-charcoal-soft/20 bg-cream px-2 py-1.5 text-sm text-charcoal focus:outline-none focus:ring-1 focus:ring-rosegold"
+            />
+          )}
+        </div>
+        <button
+          onClick={() => onDryRun(drAction, buildArgs())}
+          disabled={dryRunBusy}
+          className="mt-2 w-full rounded-full border border-charcoal-soft/30 py-1.5 text-sm font-medium text-charcoal hover:bg-charcoal-soft/5 disabled:opacity-50"
+        >
+          {dryRunBusy ? "Checking…" : "Simulate"}
+        </button>
+        {dryRunResult && (
+          <div className={`mt-2 rounded-lg border px-3 py-2 text-sm ${verdictColor}`}>
+            <span className="font-semibold capitalize">{dryRunResult.verdict}</span>
+            {" — "}{dryRunResult.reason}
+          </div>
+        )}
+      </div>
+
+      {/* Active policies */}
       {policies.map((p) => (
         <div key={p.id} className="flex items-start justify-between gap-2 rounded-xl border border-charcoal-soft/15 bg-white/40 p-3">
           <div>

@@ -1,0 +1,41 @@
+name: domestic-oracle
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ora_data:/data
+    env_file: .env
+    environment:
+      ORA_DATA_DIR: /data
+      DEER_FLOW_PROJECT_ROOT: /data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${ORA_API_URL:-http://localhost:8000}
+    ports:
+      - "3100:3100"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ora_data:
+    # All mutable runtime state: oracle.db, oracle_keys/, anchor.log,
+    # oracle_memory.json, .deer-flow/ (DeerFlow's SQLite checkpointer).
+    # Survives container rebuilds and image updates.
