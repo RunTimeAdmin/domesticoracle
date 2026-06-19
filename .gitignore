@@ -1,0 +1,34 @@
+# Secrets — never commit these
+.env
+.env.local
+backend/oracle_keys/
+keys2.txt
+
+# Runtime data
+backend/oracle.db
+backend/oracle_memory.json
+backend/.deer-flow/
+backend/echobond_memory.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Dev tooling
+.claude/
+*.output
+
+# OS
+.DS_Store
+Thumbs.db

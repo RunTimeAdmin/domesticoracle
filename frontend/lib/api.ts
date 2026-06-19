@@ -1,0 +1,163 @@
+// REST helpers for Ora's trust layer: ledger, policies, agents, approvals.
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
+
+// The owner token authorizes the control plane (approvals, policy + agent changes). The model
+// never sees this; it's the human's key. For a single-owner home deploy it's provided at build
+// time; a hosted multi-user version would swap this for per-user sessions.
+const OWNER_TOKEN = process.env.NEXT_PUBLIC_ORA_OWNER_TOKEN || "";
+
+function ownerHeaders(): Record<string, string> {
+  return OWNER_TOKEN ? { "X-Ora-Owner": OWNER_TOKEN } : {};
+}
+
+async function getJSON<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`);
+  if (!res.ok) throw new Error(`GET ${path} failed (${res.status})`);
+  return res.json();
+}
+
+async function postJSON<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...ownerHeaders() },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`POST ${path} failed (${res.status})`);
+  return res.json();
+}
+
+async function putJSON<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...ownerHeaders() },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`PUT ${path} failed (${res.status})`);
+  return res.json();
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "DELETE",
+    headers: ownerHeaders(),
+  });
+  if (!res.ok) throw new Error(`DELETE ${path} failed (${res.status})`);
+  return res.json();
+}
+
+// ---- Types ----
+export interface LedgerEntry {
+  id: number;
+  ts: number;
+  actor_id: string;
+  action: string;
+  args_summary: string;
+  decision: string;
+  status: string;
+  outcome: string;
+  prev_hash: string;
+  hash: string;
+}
+
+export interface ChainStatus {
+  valid: boolean;
+  checked: number;
+  broken_at: number | null;
+}
+
+export interface Policy {
+  id: number;
+  rule_type: string;
+  params: Record<string, unknown>;
+  source: string;
+  label: string;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  status: "active" | "revoked";
+}
+
+export interface PendingApproval {
+  id: string;
+  actor_id: string;
+  action: string;
+  args: Record<string, unknown>;
+  summary: string;
+  reason: string;
+  ledger_id: number;
+  created: number;
+}
+
+export type PolicyMode = "enforced" | "audit_only" | "permissive";
+
+export interface LedgerSummary {
+  window_days: number;
+  total: number;
+  by_category: Record<string, number>;
+  held: number;
+  denied: number;
+  executed: number;
+  financial_total: number;
+  avg_risk: number;
+  max_risk: number;
+  trust_load: number;
+}
+
+export interface Device {
+  entity_id: string;
+  name: string;
+  state: string;
+  domain: string;
+}
+
+// ---- Calls ----
+export const getLedger = () =>
+  getJSON<{ entries: LedgerEntry[] }>("/ledger?limit=100").then((d) => d.entries);
+
+export const verifyLedger = () => getJSON<ChainStatus>("/ledger/verify");
+
+export const getPolicies = () =>
+  getJSON<{ policies: Policy[] }>("/policies").then((d) => d.policies);
+
+export const addPolicy = (text: string) =>
+  postJSON<{ policy: Policy }>("/policies", { text });
+
+export const deletePolicy = (id: number) => del<{ deleted: boolean }>(`/policies/${id}`);
+
+export const getAgents = () =>
+  getJSON<{ agents: Agent[] }>("/agents").then((d) => d.agents);
+
+export const revokeAgent = (id: string) =>
+  postJSON<{ ok: boolean }>(`/agents/${id}/revoke`);
+
+export const restoreAgent = (id: string) =>
+  postJSON<{ ok: boolean }>(`/agents/${id}/restore`);
+
+export const getApprovals = () =>
+  getJSON<{ approvals: PendingApproval[] }>("/approvals").then((d) => d.approvals);
+
+export const resolveApproval = (id: string, decision: "approve" | "deny") =>
+  postJSON<{ ok: boolean; status?: string; result?: string }>(
+    `/approvals/${id}/resolve`,
+    { decision }
+  );
+
+export const getMode = () => getJSON<{ mode: PolicyMode }>("/policy/mode").then((d) => d.mode);
+
+export const setMode = (mode: PolicyMode) =>
+  putJSON<{ mode: PolicyMode }>("/policy/mode", { mode }).then((d) => d.mode);
+
+export const getSummary = () => getJSON<LedgerSummary>("/ledger/summary");
+
+export const getDevices = () =>
+  getJSON<{ configured: boolean; devices: Device[] }>("/devices");
+
+export const controlDevice = (device: string, action: string) =>
+  postJSON<{ text: string; approval: unknown | null }>("/devices/control", {
+    device,
+    action,
+  });

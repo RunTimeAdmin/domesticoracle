@@ -1,0 +1,23 @@
+# ── Ora governance layer ─────────────────────────────────────────────────────
+fastapi>=0.110
+uvicorn[standard]>=0.29
+anthropic>=0.40
+python-dotenv>=1.0
+pydantic>=2.0
+cryptography>=42.0
+
+# ── DeerFlow / LangChain agent runtime ───────────────────────────────────────
+langchain>=0.3
+langchain-core>=0.3
+langchain-anthropic>=0.3
+langgraph>=0.4
+
+# ── DeerFlow harness package (install from local clone) ──────────────────────
+# pip install -e D:\DEERFLOW\deer-flow-main\deer-flow-main\backend\packages\harness
+
+# ── Optional: web tools used by DeerFlow built-in web_fetch (Jina AI) ────────
+httpx>=0.28
+
+# ── Optional: Mem0 memory (install separately if desired) ────────────────────
+# mem0ai>=0.1
+# chromadb>=0.5
