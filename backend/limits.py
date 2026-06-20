@@ -61,10 +61,21 @@ def check_and_record(actor_id: str) -> tuple[bool, str]:
     Returns (True, "ok") if the action can proceed; (False, reason) if a limit
     would be exceeded — in which case the caller should force a HOLD.
     Limits of 0 are treated as disabled (unlimited).
+
+    Counting policy (deliberate): every attempt that reaches this function is
+    counted, including those that policy later DENYs.  A runaway agent being
+    denied by policy is still generating activity; the blast-radius cap is meant
+    to catch exactly that pattern.  Counting only executed actions would let a
+    deny-looping agent burn the entire window before the breaker fires.
+
+    Clock: the daily bucket uses UTC midnight so the reset time is constant and
+    predictable for ops/monitoring.  The time_window policy rule in policy.py
+    uses local time instead (matching what the homeowner typed in natural
+    language).  This split is intentional — see the comment there.
     """
     now = time.time()
     hour_bucket = int(now // 3600) * 3600
-    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))  # UTC — see docstring above
 
     with _lock:
         conn = _connect()

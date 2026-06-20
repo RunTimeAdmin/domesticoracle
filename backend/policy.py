@@ -180,6 +180,10 @@ def evaluate(actor_id: str, action: str, args: dict) -> tuple[str, str]:
     """Return (decision, reason) for an action, applying the strictest matching rule."""
     args = args or {}
     decision, reason = ALLOW, "No policy restricts this action."
+    # Local time — time_window rules are entered in natural language ("after 11pm")
+    # and should match what the homeowner's wall clock reads.  The daily cap in
+    # limits.py resets at UTC midnight instead; that split is intentional and
+    # documented there.
     now_hour = datetime.datetime.now().hour
 
     for rule in _cached_policies():
