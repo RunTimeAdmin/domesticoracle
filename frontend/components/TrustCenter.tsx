@@ -145,18 +145,18 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
               <button
                 onClick={onClose}
                 aria-label="Close"
-                className="grid h-8 w-8 place-items-center rounded-full text-charcoal-soft hover:bg-charcoal-soft/10"
+                className="grid h-10 w-10 place-items-center rounded-full text-charcoal-soft hover:bg-charcoal-soft/10 sm:h-8 sm:w-8"
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </button>
             </header>
 
-            <nav className="flex gap-1 border-b border-rosegold/20 px-3 py-2">
+            <nav className="flex gap-1 overflow-x-auto border-b border-rosegold/20 px-3 py-2 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
               {TABS.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => setTab(t.id)}
-                  className={`relative rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                  className={`relative shrink-0 rounded-full px-2.5 py-1.5 text-xs font-medium transition sm:px-3 sm:text-sm ${
                     tab === t.id
                       ? "bg-rosegold/15 text-charcoal"
                       : "text-charcoal-soft hover:bg-charcoal-soft/5"
@@ -172,7 +172,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
               ))}
             </nav>
 
-            <div className="flex-1 overflow-y-auto px-5 py-4">
+            <div className="flex-1 overflow-y-auto px-5 py-4 pb-8">
               {tab === "pending" && (
                 <PendingTab pending={pending} onResolved={reload} />
               )}
@@ -243,13 +243,13 @@ function PendingTab({ pending, onResolved }: { pending: PendingApproval[]; onRes
           <div className="mt-3 flex gap-2">
             <button
               onClick={async () => { await resolveApproval(p.id, "approve"); onResolved(); }}
-              className="flex-1 rounded-full bg-gradient-to-br from-rosegold to-dusty py-1.5 text-sm font-medium text-white"
+              className="flex-1 rounded-full bg-gradient-to-br from-rosegold to-dusty py-3 text-sm font-medium text-white"
             >
               Approve
             </button>
             <button
               onClick={async () => { await resolveApproval(p.id, "deny"); onResolved(); }}
-              className="flex-1 rounded-full border border-charcoal-soft/30 py-1.5 text-sm font-medium text-charcoal-soft"
+              className="flex-1 rounded-full border border-charcoal-soft/30 py-3 text-sm font-medium text-charcoal-soft"
             >
               Deny
             </button>
@@ -460,7 +460,7 @@ function LedgerTab({
         <button
           onClick={onVerify}
           disabled={verifying}
-          className="shrink-0 rounded-full border border-charcoal-soft/30 px-3 py-1.5 text-xs font-medium text-charcoal-soft hover:bg-charcoal-soft/5 disabled:opacity-50"
+          className="shrink-0 rounded-full border border-charcoal-soft/30 px-3 py-2 text-xs font-medium text-charcoal-soft hover:bg-charcoal-soft/5 disabled:opacity-50"
         >
           {verifying ? "Verifying…" : "Verify"}
         </button>
@@ -546,7 +546,7 @@ function DevicesTab({
                   <button
                     key={v.action}
                     onClick={() => onControl(d.entity_id, v.action)}
-                    className="rounded-full border border-rosegold/40 px-3 py-1 text-xs font-medium text-charcoal hover:bg-rosegold/10"
+                    className="rounded-full border border-rosegold/40 px-3 py-2 text-xs font-medium text-charcoal hover:bg-rosegold/10"
                   >
                     {v.label}
                   </button>
@@ -613,7 +613,7 @@ function PoliciesTab({
         <button
           onClick={onAdd}
           disabled={busy || !newPolicy.trim()}
-          className="mt-2 w-full rounded-full bg-gradient-to-br from-rosegold to-dusty py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="mt-2 w-full rounded-full bg-gradient-to-br from-rosegold to-dusty py-2.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {busy ? "Adding…" : "Add policy"}
         </button>
@@ -669,7 +669,7 @@ function PoliciesTab({
         <button
           onClick={() => onDryRun(drAction, buildArgs())}
           disabled={dryRunBusy}
-          className="mt-2 w-full rounded-full border border-charcoal-soft/30 py-1.5 text-sm font-medium text-charcoal hover:bg-charcoal-soft/5 disabled:opacity-50"
+          className="mt-2 w-full rounded-full border border-charcoal-soft/30 py-2.5 text-sm font-medium text-charcoal hover:bg-charcoal-soft/5 disabled:opacity-50"
         >
           {dryRunBusy ? "Checking…" : "Simulate"}
         </button>
@@ -721,14 +721,14 @@ function AgentsTab({
           {a.status === "active" ? (
             <button
               onClick={() => onRevoke(a.id)}
-              className="rounded-full border border-red-200 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+              className="rounded-full border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50"
             >
               Revoke
             </button>
           ) : (
             <button
               onClick={() => onRestore(a.id)}
-              className="rounded-full border border-charcoal-soft/30 px-3 py-1 text-xs font-medium text-charcoal-soft hover:bg-charcoal-soft/5"
+              className="rounded-full border border-charcoal-soft/30 px-3 py-2 text-xs font-medium text-charcoal-soft hover:bg-charcoal-soft/5"
             >
               Restore
             </button>
