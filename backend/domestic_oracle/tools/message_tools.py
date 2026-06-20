@@ -54,6 +54,9 @@ def send_email(to: str, subject: str, body: str) -> str:
         return _am.send(to, subject, body)
 
     try:
+        # sources= is deliberately omitted: body is composed by the agent, not
+        # attacker-supplied. Cross-call taint (e.g. body derived from a prior
+        # read_inbox that contained injected text) is not yet tracked here.
         result = consent.request_action(
             actor_id="oracle.agent",
             action="send_email",

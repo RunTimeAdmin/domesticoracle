@@ -49,9 +49,9 @@ TOOLS_META = [
 ]
 
 mcp = FastMCP(
-    name="EchoBond",
+    name="Domestic Oracle",
     instructions=(
-        "You are connected to EchoBond, a governed home AI assistant. "
+        "You are connected to Domestic Oracle, a governed home AI assistant. "
         "Every consequential action is gated by a policy engine and recorded "
         "in a tamper-evident cryptographic ledger. "
         "Guarded tools (control_device, make_purchase, send_message) may be "
@@ -66,7 +66,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 def control_device(entity_id: str, command: str) -> str:
-    """Control a smart-home device through the EchoBond consent gate.
+    """Control a smart-home device through the Domestic Oracle consent gate.
 
     The action is policy-evaluated, signed, and appended to the audit ledger.
     If policy holds it, the owner receives an approval request.
@@ -87,7 +87,7 @@ def control_device(entity_id: str, command: str) -> str:
 
 @mcp.tool()
 def make_purchase(item: str, amount: float, vendor: str = "") -> str:
-    """Request a purchase through the EchoBond consent gate.
+    """Request a purchase through the Domestic Oracle consent gate.
 
     High-value purchases may require explicit owner approval before executing.
 
@@ -112,7 +112,7 @@ def make_purchase(item: str, amount: float, vendor: str = "") -> str:
 
 @mcp.tool()
 def send_message(recipient: str, body: str) -> str:
-    """Send a message on the user's behalf through the EchoBond consent gate.
+    """Send a message on the user's behalf through the Domestic Oracle consent gate.
 
     The message body is also scanned for injection signals before the gate runs.
 
@@ -154,7 +154,7 @@ def list_devices() -> str:
 def query_ledger(limit: int = 20) -> str:
     """Return recent audit ledger entries.
 
-    Shows what actions EchoBond has taken, held, or denied. Each entry
+    Shows what actions Domestic Oracle has taken, held, or denied. Each entry
     includes the actor, action, decision, and a short outcome.
     No side effects; this call bypasses the consent gate.
 

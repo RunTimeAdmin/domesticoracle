@@ -27,11 +27,40 @@ from domestic_oracle.core import OracleClient  # noqa: E402
 
 _client: OracleClient | None = None
 
+_REQUIRED_TOOLS = frozenset({
+    "control_device", "make_purchase", "send_message",
+    "send_email", "reply_to_email", "read_inbox", "discover_devices",
+})
+
+
+def _validate_tool_config() -> None:
+    """Boot-time check: every oracle tool must be registered in config.yaml."""
+    try:
+        import yaml
+    except ImportError:
+        import warnings
+        warnings.warn("[Domestic Oracle] PyYAML not available; skipping tool config validation.")
+        return
+    try:
+        config = yaml.safe_load(Path(_CONFIG_PATH).read_text())
+        registered = {t["name"] for t in (config.get("tools") or [])}
+    except Exception as e:
+        import warnings
+        warnings.warn(f"[Domestic Oracle] Could not validate tool config: {e}")
+        return
+    missing = _REQUIRED_TOOLS - registered
+    if missing:
+        raise RuntimeError(
+            f"Boot aborted: oracle tools not in config.yaml: {sorted(missing)}. "
+            "Add them to the tools: block."
+        )
+
 
 def get_client() -> OracleClient:
     """Return the process-wide Oracle client, creating it on first call."""
     global _client
     if _client is None:
+        _validate_tool_config()
         _client = OracleClient(
             config_path=_CONFIG_PATH,
             thinking_enabled=True,
