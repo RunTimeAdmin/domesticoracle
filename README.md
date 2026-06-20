@@ -40,6 +40,7 @@ Domestic Oracle solves this with a mandatory consent layer between the AI and th
 | **Key rotation** | Rotate the signing key without breaking historical chain verification |
 | **Provenance scanning** | All external content is scanned for prompt-injection signals before the AI sees it |
 | **Blast-radius circuit breaker** | Per-actor hourly and global daily action caps prevent runaway agents |
+| **AtomicMail email integration** | Send, reply to, and read email via a governed `@atomicmail.ai` inbox; every outgoing message is held for approval |
 
 ---
 
@@ -184,6 +185,7 @@ npm run dev   # → http://localhost:3100
 | `ORA_OWNER_TOKEN` | No | Pin the owner token across restarts |
 | `ORA_MCP_ENABLED` | No | Set to `false` to disable the MCP server (default: `true`) |
 | `ORA_HTTPS` | No | Set to `1` for production HTTPS cookie flags |
+| `ORA_ATOMICMAIL_CREDENTIALS_PATH` | No | Path to AtomicMail credentials file (default: `~/.atomicmail/credentials.json`) |
 
 ### Policy enforcement modes
 
@@ -198,6 +200,41 @@ Set via the Trust Center UI or `PUT /policy/mode`:
 ### Agent model (`backend/config.yaml`)
 
 The agent model is configured in `config.yaml`. Default: `claude-sonnet-4-6`.
+
+---
+
+## Email integration (AtomicMail)
+
+Domestic Oracle ships with built-in email via [AtomicMail](https://atomicmail.ai), an agent-native email service built on [JMAP](https://jmap.io/) (RFC 8620/8621).
+
+### One-time setup
+
+```bash
+npx --package=@atomicmail/agent-skill atomicmail register --username oracle
+```
+
+This runs a proof-of-work registration and writes credentials to `~/.atomicmail/credentials.json`. The Oracle picks them up automatically on next start.
+
+### What it does
+
+| Tool | Tier | What it does |
+|------|------|-------------|
+| `send_email` | GUARDED | Sends an email; held for approval by default policy |
+| `reply_to_email` | GUARDED | Replies to a message by ID; held for approval |
+| `read_inbox` | SAFE | Reads recent inbox; logged but never held |
+
+Outgoing email goes through the same consent gate as device commands and purchases. The default seed policy blocks all outgoing email until the owner approves each message in the Trust Center. Change this by adding a permissive rule via `POST /policies` or the Trust Center UI.
+
+### Example policy: auto-allow email to a trusted address
+
+```json
+{
+  "rule_type": "action_deny",
+  "params": { "action": "send_email" }
+}
+```
+
+Replace with a `time_window` or `spend_limit` variant to allow email within specific windows. See the [API reference](#api-reference) for policy schema.
 
 ---
 
@@ -329,7 +366,8 @@ The built-in MCP (Model Context Protocol) server exposes Domestic Oracle's gover
 - [ ] Docker / one-command setup
 - [ ] Telegram front-end
 - [ ] Scheduled recurring tasks ("every morning at 8am, summarise my emails")
-- [ ] Email and calendar integration
+- [x] Email integration (AtomicMail JMAP)
+- [ ] Calendar integration
 - [ ] Multi-user household support
 - [ ] Published MCP tool registry listing
 

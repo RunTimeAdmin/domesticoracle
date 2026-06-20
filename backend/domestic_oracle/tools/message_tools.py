@@ -1,8 +1,10 @@
 """
-Guarded messaging tool for Domestic Oracle.
+Messaging tools for Domestic Oracle.
 
-Messages are simulated in Phase 1. The default policy holds all outgoing messages
-for the owner's approval (recipient_block: all_contacts).
+send_message  — GUARDED: simulated IM/SMS; held by default policy (phase 1)
+send_email    — GUARDED: real outgoing email via AtomicMail JMAP
+reply_to_email — GUARDED: real email reply via AtomicMail JMAP
+read_inbox    — SAFE: read-only inbox fetch; logged but not gate-held
 """
 from langchain_core.tools import tool
 
@@ -27,10 +29,7 @@ def send_message(recipient: str, body: str) -> str:
         execute=_execute,
     )
     if result["status"] == "executed":
-        return (
-            f"Done. {result['result']} "
-            f"(Audit ledger #{result['ledger_id']})"
-        )
+        return f"Done. {result['result']} (Audit ledger #{result['ledger_id']})"
     if result["status"] == "held":
         return (
             f"Message held for owner approval (approval #{result['approval_id']}). "
@@ -38,3 +37,109 @@ def send_message(recipient: str, body: str) -> str:
             f"The message has NOT been sent — the owner must approve in the Trust Center."
         )
     return f"Message blocked by policy. Reason: {result['reason']}."
+
+
+@tool
+def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email via the Oracle's AtomicMail inbox.
+
+    Passes through the consent gate: the default policy holds all outgoing email
+    for owner approval. Requires AtomicMail credentials (run the register CLI once).
+    Logged to the audit ledger.
+    """
+    import consent
+    from domestic_oracle import atomicmail_client as _am
+
+    def _execute():
+        return _am.send(to, subject, body)
+
+    try:
+        result = consent.request_action(
+            actor_id="oracle.agent",
+            action="send_email",
+            args={"to": to, "subject": subject, "body": body},
+            execute=_execute,
+        )
+    except _am.AtomicMailError as e:
+        return f"Email unavailable: {e}"
+
+    if result["status"] == "executed":
+        return f"Done. {result['result']} (Audit ledger #{result['ledger_id']})"
+    if result["status"] == "held":
+        return (
+            f"Email held for owner approval (approval #{result['approval_id']}). "
+            f"Reason: {result['reason']}. "
+            f"The email has NOT been sent — the owner must approve in the Trust Center."
+        )
+    return f"Email blocked by policy. Reason: {result['reason']}."
+
+
+@tool
+def reply_to_email(email_id: str, body: str) -> str:
+    """Reply to an email in the Oracle's AtomicMail inbox by its message ID.
+
+    Use read_inbox first to find the email_id. Passes through the consent gate.
+    Logged to the audit ledger.
+    """
+    import consent
+    from domestic_oracle import atomicmail_client as _am
+
+    def _execute():
+        return _am.reply(email_id, body)
+
+    try:
+        result = consent.request_action(
+            actor_id="oracle.agent",
+            action="reply_to_email",
+            args={"email_id": email_id, "body": body},
+            execute=_execute,
+        )
+    except _am.AtomicMailError as e:
+        return f"Email reply unavailable: {e}"
+
+    if result["status"] == "executed":
+        return f"Done. {result['result']} (Audit ledger #{result['ledger_id']})"
+    if result["status"] == "held":
+        return (
+            f"Reply held for owner approval (approval #{result['approval_id']}). "
+            f"Reason: {result['reason']}. "
+            f"The reply has NOT been sent — the owner must approve in the Trust Center."
+        )
+    return f"Reply blocked by policy. Reason: {result['reason']}."
+
+
+@tool
+def read_inbox(limit: int = 10) -> str:
+    """Read recent emails from the Oracle's AtomicMail inbox.
+
+    Returns a formatted list of the most recent messages (subject, sender, preview).
+    Read-only — no consent gate, but logged to the audit ledger.
+    Requires AtomicMail credentials (run the register CLI once).
+    """
+    import ledger
+    import risk
+    from domestic_oracle import atomicmail_client as _am
+
+    try:
+        emails = _am.list_inbox(limit=max(1, min(limit, 50)))
+    except _am.AtomicMailError as e:
+        return f"Inbox unavailable: {e}"
+
+    if not emails:
+        result = "Inbox is empty."
+    else:
+        lines = [f"Recent inbox ({len(emails)} messages):"]
+        for msg in emails:
+            from_list = msg.get("from") or [{}]
+            sender = from_list[0].get("email", "unknown")
+            subject = msg.get("subject", "(no subject)")
+            preview = (msg.get("preview") or "")[:100]
+            lines.append(f"- [{msg['id']}] From: {sender} | {subject} | {preview}")
+        result = "\n".join(lines)
+
+    ledger.append(
+        "oracle.agent", "read_inbox", f"limit={limit}",
+        "allow", "executed", result[:300],
+        risk.category("read_inbox"), risk.score("read_inbox", {}, "allow"),
+    )
+    return result

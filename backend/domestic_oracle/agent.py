@@ -68,6 +68,16 @@ def _register_executor() -> None:
             body      = args.get("body", "")
             preview   = body if len(body) <= 80 else body[:77] + "..."
             return f"[SIMULATED] Sent a message to {recipient}: \"{preview}\""
+        if action == "send_email":
+            from domestic_oracle import atomicmail_client as _am
+            return _am.send(
+                args.get("to", ""),
+                args.get("subject", ""),
+                args.get("body", ""),
+            )
+        if action == "reply_to_email":
+            from domestic_oracle import atomicmail_client as _am
+            return _am.reply(args.get("email_id", ""), args.get("body", ""))
         raise ValueError(f"No guarded handler for action: {action!r}")
 
     consent.set_executor(_execute)

@@ -11,15 +11,18 @@ understand why something scored the way it did, not trust a black box.
 """
 
 CATEGORY = {
-    "make_purchase":  "financial",
-    "send_message":   "communication",
-    "control_device": "home_control",
-    "search_web":       "read",
-    "web_fetch":        "read",
-    "get_weather":      "read",
-    "discover_devices": "read",
-    "add_policy":     "governance",
-    "resolve":        "governance",
+    "make_purchase":   "financial",
+    "send_message":    "communication",
+    "send_email":      "communication",
+    "reply_to_email":  "communication",
+    "control_device":  "home_control",
+    "search_web":      "read",
+    "web_fetch":       "read",
+    "get_weather":     "read",
+    "discover_devices":"read",
+    "read_inbox":      "read",
+    "add_policy":      "governance",
+    "resolve":         "governance",
 }
 
 _BASE = {
