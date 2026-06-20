@@ -1,9 +1,9 @@
 """
-Cryptographic primitives for EchoBond.
+Cryptographic primitives for Domestic Oracle.
 
 Ed25519 signatures for the ledger server key and per-agent keypairs.
 Nonces are persisted to SQLite so replay protection survives restarts and
-is visible across multiple workers — unlike the in-memory dict in Ora.
+is visible across multiple workers.
 
 Key rotation: oracle_keys/keyset.json tracks all public keys ever used so that
 historical ledger entries remain verifiable after the active key is rotated.

@@ -1,7 +1,7 @@
 """
-EchoBond MCP server.
+Domestic Oracle MCP server.
 
-Exposes EchoBond's governed tools via the Model Context Protocol so any
+Exposes Domestic Oracle's governed tools via the Model Context Protocol so any
 MCP-compatible client (Claude Desktop, Cursor, Zed, etc.) can control the
 home through the same consent gate, policy engine, and tamper-evident ledger
 as the built-in chat interface.

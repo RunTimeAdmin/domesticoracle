@@ -79,10 +79,23 @@ def reply_to_email(email_id: str, body: str) -> str:
     """Reply to an email in the Oracle's AtomicMail inbox by its message ID.
 
     Use read_inbox first to find the email_id. Passes through the consent gate.
+    The original email is scanned for injection signals before the reply is queued.
     Logged to the audit ledger.
     """
     import consent
+    import provenance as prov_mod
     from domestic_oracle import atomicmail_client as _am
+
+    # Fetch and scan the original email content so the ledger records what
+    # influenced this outgoing action. Injection signals force a HOLD even if
+    # policy would otherwise allow.
+    sources = None
+    try:
+        content = _am.get_email_preview(email_id)
+        if content:
+            sources = [{"type": "email", "id": email_id, "content": content}]
+    except Exception:
+        pass  # Don't fail the reply if scanning fails
 
     def _execute():
         return _am.reply(email_id, body)
@@ -93,6 +106,7 @@ def reply_to_email(email_id: str, body: str) -> str:
             action="reply_to_email",
             args={"email_id": email_id, "body": body},
             execute=_execute,
+            sources=sources,
         )
     except _am.AtomicMailError as e:
         return f"Email reply unavailable: {e}"
@@ -108,15 +122,21 @@ def reply_to_email(email_id: str, body: str) -> str:
     return f"Reply blocked by policy. Reason: {result['reason']}."
 
 
+_INBOX_CONTENT_CAP = 4000  # total chars returned to agent context
+_PER_EMAIL_PREVIEW_CAP = 200  # chars of preview per message
+
+
 @tool
 def read_inbox(limit: int = 10) -> str:
     """Read recent emails from the Oracle's AtomicMail inbox.
 
     Returns a formatted list of the most recent messages (subject, sender, preview).
-    Read-only — no consent gate, but logged to the audit ledger.
+    Email content is scanned for injection signals before it reaches the agent.
+    Read-only — no consent gate, but logged to the audit ledger with provenance.
     Requires AtomicMail credentials (run the register CLI once).
     """
     import ledger
+    import provenance as prov_mod
     import risk
     from domestic_oracle import atomicmail_client as _am
 
@@ -126,20 +146,36 @@ def read_inbox(limit: int = 10) -> str:
         return f"Inbox unavailable: {e}"
 
     if not emails:
+        prov = None
         result = "Inbox is empty."
     else:
+        # Scan each message for injection signals before passing content to the agent.
+        sources = []
         lines = [f"Recent inbox ({len(emails)} messages):"]
         for msg in emails:
             from_list = msg.get("from") or [{}]
             sender = from_list[0].get("email", "unknown")
             subject = msg.get("subject", "(no subject)")
-            preview = (msg.get("preview") or "")[:100]
+            preview = (msg.get("preview") or "")[:_PER_EMAIL_PREVIEW_CAP]
             lines.append(f"- [{msg['id']}] From: {sender} | {subject} | {preview}")
+            sources.append({
+                "type": "email",
+                "id": msg["id"],
+                "content": f"{subject}\n{preview}",
+            })
+
+        prov = prov_mod.scan_sources(sources)
+        if prov["suspicious"]:
+            lines.insert(1, "[WARNING] Injection signals detected in inbox content — details in audit ledger.")
+
         result = "\n".join(lines)
+        if len(result) > _INBOX_CONTENT_CAP:
+            result = result[:_INBOX_CONTENT_CAP] + "\n[... truncated]"
 
     ledger.append(
         "oracle.agent", "read_inbox", f"limit={limit}",
         "allow", "executed", result[:300],
         risk.category("read_inbox"), risk.score("read_inbox", {}, "allow"),
+        provenance=prov,
     )
     return result

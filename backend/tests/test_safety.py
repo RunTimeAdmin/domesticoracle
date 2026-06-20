@@ -221,7 +221,11 @@ def test_provenance_detection_and_chain_integrity(safety_db):
             "content": injection_text,
         }],
     )
-    assert result["status"] == "executed"
+    # Suspicious content now forces HOLD regardless of policy: the gate blocks
+    # autonomous execution and parks it in the approval queue for owner review.
+    assert result["status"] == "held", (
+        f"Injection-flagged content must be held for owner review; got {result['status']}"
+    )
     injection_ledger_id = result["ledger_id"]
 
     # Locate the specific ledger entry by ID.

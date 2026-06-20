@@ -41,8 +41,6 @@ models:
 tool_groups:
   - name: web
   - name: file:read
-  - name: file:write
-  - name: bash
   - name: oracle
 
 # ============================================================================
@@ -65,7 +63,7 @@ tools:
     use: deerflow.community.image_search.tools:image_search_tool
     max_results: 5
 
-  # --- File operations ---
+  # --- File operations (read-only; write/bash removed — ungoverned paths) ---
   - name: ls
     group: file:read
     use: deerflow.sandbox.tools:ls_tool
@@ -84,19 +82,7 @@ tools:
     use: deerflow.sandbox.tools:grep_tool
     max_results: 100
 
-  - name: write_file
-    group: file:write
-    use: deerflow.sandbox.tools:write_file_tool
-
-  - name: str_replace
-    group: file:write
-    use: deerflow.sandbox.tools:str_replace_tool
-
-  - name: bash
-    group: bash
-    use: deerflow.sandbox.tools:bash_tool
-
-  # --- Domestic Oracle: guarded home actions (route through consent gate + ledger) ---
+  # --- Domestic Oracle: guarded actions (consent gate + ledger) ---
   - name: control_device
     group: oracle
     use: domestic_oracle.tools.home_tools:control_device
@@ -109,10 +95,22 @@ tools:
     group: oracle
     use: domestic_oracle.tools.message_tools:send_message
 
+  - name: send_email
+    group: oracle
+    use: domestic_oracle.tools.message_tools:send_email
+
+  - name: reply_to_email
+    group: oracle
+    use: domestic_oracle.tools.message_tools:reply_to_email
+
   # --- Domestic Oracle: safe read (logged to ledger, no consent gate) ---
   - name: discover_devices
     group: oracle
     use: domestic_oracle.tools.safe_tools:discover_devices
+
+  - name: read_inbox
+    group: oracle
+    use: domestic_oracle.tools.message_tools:read_inbox
 
 tool_search:
   enabled: false

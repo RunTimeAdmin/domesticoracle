@@ -30,11 +30,14 @@ Trust layer (all routes from Ora, unchanged):
   GET    /provenance/patterns   injection pattern registry  [owner]
   GET    /mcp/info             MCP server status + tool list + client config  [owner]
 
-[owner] endpoints require the X-Ora-Owner header. The Oracle agent can never present it.
+[owner] endpoints require a valid ora_session cookie from POST /auth/login.
+The Oracle agent cannot present this cookie; it can only act through the consent gate.
 """
 import os, json, sys, time
 from pathlib import Path
 from collections import OrderedDict, deque
+
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Cookie, Request, Response
@@ -100,16 +103,17 @@ def _get_claude() -> "_Anthropic | None":
             _claude = _Anthropic(api_key=key)
     return _claude
 
-app = FastAPI(title="Domestic Oracle", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    asyncio.create_task(monitor.verify_loop())
+    yield
+
+
+app = FastAPI(title="Domestic Oracle", version="1.0.0", lifespan=_lifespan)
 
 # Mount MCP SSE server unless explicitly disabled via ORA_MCP_ENABLED=false.
 if os.getenv("ORA_MCP_ENABLED", "true").lower() not in ("false", "0", "no"):
     app.mount("/mcp", _mcp.build_asgi_app(mount_path="/mcp"))
-
-
-@app.on_event("startup")
-async def _startup():
-    asyncio.create_task(monitor.verify_loop())
 
 _origins = os.getenv(
     "ALLOWED_ORIGINS",
@@ -440,7 +444,7 @@ def mcp_info(request: Request, _owner: bool = Depends(require_owner)):
         "tools": _mcp.TOOLS_META,
         "claude_desktop_config": {
             "mcpServers": {
-                "echobond": {
+                "domestic-oracle": {
                     "url": sse_url,
                     "transport": "sse",
                 }

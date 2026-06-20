@@ -209,6 +209,7 @@ def request_action(actor_id: str, action: str, args: dict, execute,
     args = args or {}
     summary = _summarize(args)
     prov = prov_mod.scan_sources(sources) if sources else None
+    _prov_suspicious = prov is not None and prov.get("suspicious", False)
 
     agent = _agent(actor_id)
     if agent and agent["status"] == "revoked":
@@ -225,6 +226,14 @@ def request_action(actor_id: str, action: str, args: dict, execute,
         decision, reason = policy.HOLD, _rate_reason
     else:
         decision, reason = policy.evaluate(actor_id, action, args)
+
+    # Provenance safety rail: content flagged for injection signals forces HOLD
+    # regardless of what policy decided. The owner can inspect the ledger entry
+    # (which includes the provenance record) and approve or deny explicitly.
+    if _prov_suspicious and decision == policy.ALLOW:
+        decision = policy.HOLD
+        reason = "Content triggering this action was flagged for injection signals — held for owner review."
+
     mode = policy.get_mode()
     cat, rk = risk.category(action), risk.score(action, args, decision)
 

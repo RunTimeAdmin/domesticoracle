@@ -427,6 +427,21 @@ def reply(email_id: str, body: str) -> str:
     raise AtomicMailError(f"Reply failed: {sub.get('notCreated') or sub.get('error')}")
 
 
+def get_email_preview(email_id: str) -> str:
+    """Return subject + preview for a single email, for provenance scanning."""
+    creds = _load_credentials()
+    account_id = creds.get("inboxId", "oracle")
+    responses = _jmap([
+        ["Email/get", {
+            "accountId":  account_id,
+            "ids":        [email_id],
+            "properties": ["subject", "preview"],
+        }, "e"],
+    ], creds)
+    email = (responses.get("e", {}).get("list") or [{}])[0]
+    return f"{email.get('subject', '')}\n{email.get('preview', '')}".strip()
+
+
 def search(query: str, limit: int = 10) -> list[dict]:
     """Search emails by text. Returns matching message dicts."""
     creds = _load_credentials()
