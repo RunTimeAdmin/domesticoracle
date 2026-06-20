@@ -185,7 +185,7 @@ npm run dev   # → http://localhost:3100
 | `ORA_OWNER_TOKEN` | No | Pin the owner token across restarts |
 | `ORA_MCP_ENABLED` | No | Set to `false` to disable the MCP server (default: `true`) |
 | `ORA_HTTPS` | No | Set to `1` for production HTTPS cookie flags |
-| `ORA_ATOMICMAIL_CREDENTIALS_PATH` | No | Path to AtomicMail credentials file (default: `~/.atomicmail/credentials.json`) |
+| `ORA_ATOMICMAIL_DIR` | No | AtomicMail data directory (default: `~/.atomicmail/`; contains credentials.json, session.jwt, capability.jwt) |
 
 ### Policy enforcement modes
 
