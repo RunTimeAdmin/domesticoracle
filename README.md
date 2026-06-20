@@ -207,17 +207,27 @@ The agent model is configured in `config.yaml`. Default: `claude-sonnet-4-6`.
 
 **This is optional.** The backend starts and runs without it. Skip this section if you don't want the agent to send or receive email.
 
-If you do set it up, the Oracle gets a dedicated `oracle@atomicmail.ai` inbox — a real email address it can send from, read, and reply to. It does not connect to your personal Gmail or any existing account.
+### What this actually gives the agent
+
+Without email, the agent can only talk back to you in the chat window. It has no way to contact the outside world — it can search the web and control devices, but it cannot send anything to another person.
+
+With email, the agent gets a real address (`oracle@atomicmail.ai`) it can send from and receive at. This crosses a meaningful line: the agent can now be a party in a conversation, not just a tool you talk to. Practically:
+
+- You can say "draft an email to my landlord about the broken heater and send it when I approve." The agent composes it and puts it in your approval queue. You review and approve in the Trust Center. It sends.
+- You can ask "what's in the inbox?" and get a summary of what has arrived at `oracle@atomicmail.ai` — useful if you have told people or services to contact the Oracle directly.
+- You can say "reply to the last message from Sarah saying I'll be ten minutes late." The agent drafts the reply; you approve it before it goes.
+
+This is **not** a connection to your personal Gmail or any existing account. It is a separate inbox the agent owns. If you want to use it as a coordination point — for example, having a smart home sensor notification service email the Oracle so it can act on alerts — you give that service the `oracle@atomicmail.ai` address.
 
 ### What you get
 
 | Capability | How it works |
 |------------|-------------|
-| Agent sends email | You say "email David about the meeting" in chat; the agent composes it and it goes to your approval queue |
-| Agent reads inbox | You ask "what's in my inbox?" and it returns subjects and previews |
-| Agent replies | You say "reply to the last email from Sarah"; it drafts a reply and holds it for approval |
+| Agent sends email | Composes and queues outgoing email; held for your approval before it leaves |
+| Agent reads inbox | Returns subjects, senders, and previews from `oracle@atomicmail.ai` on request |
+| Agent replies | Drafts a reply to an existing message; held for your approval |
 | All outgoing email gated | No email leaves without your explicit approval in the Trust Center |
-| Full audit trail | Every send, reply, and inbox read is in the ledger |
+| Full audit trail | Every send, reply, and inbox read is signed and written to the ledger |
 
 ### Setup (one command, needs Node.js 18+)
 
