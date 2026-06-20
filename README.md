@@ -2,7 +2,7 @@
 
 **Self-hosted AI home assistant with a built-in governance layer.**
 
-Domestic Oracle is an open-source, privacy-first AI assistant you run on your own hardware. It can remember your preferences, search the web, read and write files, control your smart home via Home Assistant, and take real-world actions — but every consequential action passes through a policy engine, an approval queue, and a tamper-evident cryptographic audit ledger that you own and control.
+Domestic Oracle is an open-source, privacy-first AI assistant you run on your own hardware. It can remember your preferences, search the web, read and write files, control your smart home via Home Assistant, and take real-world actions, but every consequential action passes through a policy engine, an approval queue, and a tamper-evident cryptographic audit ledger that you own and control.
 
 > **An AI that acts. With your permission.**
 
@@ -15,14 +15,14 @@ Domestic Oracle is an open-source, privacy-first AI assistant you run on your ow
 
 ## Why Domestic Oracle
 
-Most AI assistants are chat interfaces — they answer questions but cannot act on your behalf. Agentic AI assistants that *can* act raise a harder problem: **how do you stay in control?**
+Most AI assistants are chat interfaces: they answer questions but cannot act on your behalf. Agentic AI assistants that *can* act raise a harder problem: **how do you stay in control?**
 
 Domestic Oracle solves this with a mandatory consent layer between the AI and the real world:
 
 - **Before any consequential action executes**, policy rules are evaluated
-- **Anything the policy holds** goes into an approval queue — you approve or deny it
+- **Anything the policy holds** goes into an approval queue; you approve or deny it
 - **Every action, regardless of verdict**, is written to a hash-chained, Ed25519-signed audit ledger you can verify independently
-- **The AI can never forge its own permission** — internal actors cannot present the owner header; external agents must present a valid cryptographic signature
+- **The AI can never forge its own permission**; internal actors cannot present the owner header, and external agents must present a valid cryptographic signature
 
 ---
 
@@ -68,7 +68,7 @@ FastAPI gateway  (main.py)
               /ledger  /policies  /agents  /approvals  /keys  /mcp
 ```
 
-The consent gate is a single chokepoint: **every guarded action flows through `consent.request_action()`**, which evaluates policy, appends to the ledger, and either executes, holds, or blocks — in that order, atomically.
+The consent gate is a single chokepoint: **every guarded action flows through `consent.request_action()`**, which evaluates policy, appends to the ledger, and either executes, holds, or blocks, in that order, atomically.
 
 ### Technology stack
 
@@ -87,7 +87,7 @@ The consent gate is a single chokepoint: **every guarded action flows through `c
 
 ## Who is this for
 
-**Home users who want a capable AI assistant without giving up control.** If you have a Home Assistant setup, run a home server or NAS, and want an AI that can actually do things — control devices, search, remember, take action — but draws a hard line at acting without your knowledge, this is built for you.
+**Home users who want a capable AI assistant without giving up control.** If you have a Home Assistant setup, run a home server or NAS, and want an AI that can actually do things (control devices, search, remember, take action) but draws a hard line at acting without your knowledge, this is built for you.
 
 **Developers building governed AI systems.** The consent gate, policy engine, and audit ledger are cleanly separated modules. Embed them in your own agentic application to get auditability and human-in-the-loop control without reimplementing the infrastructure.
 
@@ -99,13 +99,13 @@ The consent gate is a single chokepoint: **every guarded action flows through `c
 
 | | Domestic Oracle | Typical AI assistant | Open-source agent framework |
 |--|--|--|--|
-| **Actions gated by policy** | ✅ Hard — policy evaluates before execution | ❌ | ❌ |
-| **Cryptographic audit trail** | ✅ Hash-chained, Ed25519-signed | ❌ | ❌ |
-| **Human approval queue** | ✅ Built-in, UI included | ❌ | ❌ |
-| **Agent revocation** | ✅ Per-actor, instant, no restart | ❌ | Varies |
-| **Prompt injection defence** | ✅ Provenance scanning on all external content | ❌ | ❌ |
-| **Self-hosted / private** | ✅ Your hardware, your data | ❌ | ✅ |
-| **Home Assistant integration** | ✅ | Some | ❌ |
+| **Actions gated by policy** | Yes, hard | No | No |
+| **Cryptographic audit trail** | Yes, hash-chained Ed25519-signed | No | No |
+| **Human approval queue** | Yes, built-in UI | No | No |
+| **Agent revocation** | Per-actor, instant, no restart | No | Varies |
+| **Prompt injection defence** | Provenance scanning on all external content | No | No |
+| **Self-hosted / private** | Your hardware, your data | No | Yes |
+| **Home Assistant integration** | Yes | Some | No |
 
 ---
 
@@ -115,7 +115,7 @@ The consent gate is a single chokepoint: **every guarded action flows through `c
 - Node.js 18+
 - [Anthropic API key](https://console.anthropic.com/)
 - [DeerFlow harness](https://github.com/bytedance/deer-flow) cloned locally
-- Home Assistant (optional — a mock home is used if not configured)
+- Home Assistant (optional; a mock home is used if not configured)
 
 ---
 
@@ -141,7 +141,7 @@ pip install -e "/path/to/deer-flow/backend/packages/harness"
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env — set ANTHROPIC_API_KEY at minimum
+# Edit .env -- set ANTHROPIC_API_KEY at minimum
 pip install -r requirements.txt
 uvicorn main:app --port 8000 --reload
 ```
@@ -152,7 +152,7 @@ On first run the backend prints your owner token:
 Owner token: 0550d752...
 ```
 
-Copy it — you need it for the frontend and for owner-gated API calls.
+Copy it; you need it for the frontend and for owner-gated API calls.
 
 ### 4. Frontend
 
@@ -164,10 +164,10 @@ npm install
 npm run dev   # → http://localhost:3100
 ```
 
-> **Security note — localhost only.** `NEXT_PUBLIC_ORA_OWNER_TOKEN` is visible in the
+> **Security note: localhost only.** `NEXT_PUBLIC_ORA_OWNER_TOKEN` is visible in the
 > JavaScript bundle. This is intentional for single-owner localhost use only. A hosted
 > deployment needs a proper login flow: server-side session, HttpOnly cookie, Secure +
-> SameSite=Strict — **do not expose this on a shared network without replacing auth.**
+> SameSite=Strict. Do not expose this on a shared network without replacing auth.
 
 ---
 
@@ -191,7 +191,7 @@ Set via the Trust Center UI or `PUT /policy/mode`:
 
 | Mode | Behaviour |
 |------|-----------|
-| `enforced` | Rules apply — actions held or denied as configured **(default)** |
+| `enforced` | Rules apply, actions held or denied as configured **(default)** |
 | `audit_only` | All actions allowed but every verdict is still logged |
 | `permissive` | All actions allowed, minimal logging |
 
@@ -207,11 +207,11 @@ The Trust Center (top-right drawer in the UI) is your live control panel:
 
 | Tab | What it shows |
 |-----|--------------|
-| **Pending** | Actions held for your approval — one-click approve or deny |
-| **Ledger** | Every action, with verdict, risk score, provenance, and timestamp |
+| **Pending** | Actions held for your approval, with one-click approve or deny |
+| **Ledger** | Every action with verdict, risk score, provenance, and timestamp |
 | **Devices** | Smart home devices discovered via Home Assistant |
-| **Policies** | Active rules — add rules in natural language or as structured JSON |
-| **Agents** | Registered actors and their status — revoke or restore access instantly |
+| **Policies** | Active rules; add new rules in natural language or as structured JSON |
+| **Agents** | Registered actors and their status; revoke or restore access instantly |
 | **Keys** | Signing key status, rotation history, offline backup export |
 
 ---
@@ -248,7 +248,7 @@ pytest tests/ -v
 
 ## API reference
 
-`[owner]` endpoints require a valid `ora_session` HttpOnly cookie obtained from `POST /auth/login`. The Oracle agent cannot present this cookie — it can only act through the consent gate.
+`[owner]` endpoints require a valid `ora_session` HttpOnly cookie obtained from `POST /auth/login`. The Oracle agent cannot present this cookie; it can only act through the consent gate.
 
 ```
 POST   /auth/login                      Exchange passphrase for session cookie
@@ -299,7 +299,7 @@ GET    /history/{user_id}               Recent conversation thread
 Yes. A mock home module is used when `ORA_HA_URL` is not set. All device control actions still flow through the consent gate and are logged to the ledger.
 
 **Can I use a different LLM?**
-The agent is Claude Sonnet 4 via the Anthropic API. The DeerFlow harness supports other models through `config.yaml` — see DeerFlow's documentation for the model configuration format.
+The agent is Claude Sonnet 4 via the Anthropic API. The DeerFlow harness supports other models through `config.yaml`; see DeerFlow's documentation for the model configuration format.
 
 **What happens if I revoke the agent while an action is pending?**
 Identity is checked at the gate, not at scheduling time. If the agent is revoked before it submits another action, that action is denied. Actions already in the approval queue submitted before revocation can still be approved or denied by the owner.
@@ -317,10 +317,10 @@ Every action appended to the ledger includes: actor ID, action, arguments, polic
 Yes. `GET /ledger/export` returns the full chain and keyset. The `tools/verify_ledger.py` script verifies signatures and hash links offline using only the exported JSON and standard Python libraries.
 
 **How is this different from Open Interpreter or similar projects?**
-Open Interpreter and similar tools focus on capability — giving an LLM the ability to run code and control a computer. Domestic Oracle focuses on **governed capability**: the same actions, but with a mandatory policy layer, approval queue, and cryptographic audit trail. Every action is logged and policy-constrained by design, not by convention.
+Open Interpreter and similar tools focus on capability: giving an LLM the ability to run code and control a computer. Domestic Oracle focuses on **governed capability**: the same actions, but with a mandatory policy layer, approval queue, and cryptographic audit trail. Every action is logged and policy-constrained by design, not by convention.
 
 **What is the MCP server for?**
-The built-in MCP (Model Context Protocol) server exposes Domestic Oracle's governance tools — ledger read, policy query, approval resolution — as MCP tools. Any MCP-compatible client (Claude Desktop, etc.) can connect to it and interact with your governance layer directly.
+The built-in MCP (Model Context Protocol) server exposes Domestic Oracle's governance tools (ledger read, policy query, approval resolution) as MCP tools. Any MCP-compatible client (Claude Desktop, etc.) can connect to it and interact with the governance layer directly.
 
 ---
 
@@ -347,15 +347,15 @@ cd backend && pytest tests/ -v
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ---
 
 ## Related projects
 
-- [DeerFlow](https://github.com/bytedance/deer-flow) — the LangGraph agent harness powering the Oracle agent
-- [Home Assistant](https://www.home-assistant.io/) — the smart home platform integrated for device control
-- [Model Context Protocol](https://modelcontextprotocol.io/) — the MCP standard the built-in server implements
+- [DeerFlow](https://github.com/bytedance/deer-flow): the LangGraph agent harness powering the Oracle agent
+- [Home Assistant](https://www.home-assistant.io/): the smart home platform integrated for device control
+- [Model Context Protocol](https://modelcontextprotocol.io/): the MCP standard the built-in server implements
 
 ---
 
