@@ -33,6 +33,12 @@ import threading
 import time
 
 import pytest
+
+# Route tests import main, which pulls in the vendored DeerFlow runtime.
+# Skip the whole file gracefully on environments where the harness isn't
+# installed (Python 3.11 sandbox, thin CI) rather than erroring at collection.
+pytest.importorskip("deerflow")
+
 from fastapi.testclient import TestClient
 
 import auth
