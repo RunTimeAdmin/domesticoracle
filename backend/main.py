@@ -47,6 +47,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import ledger
+import limits
 import policy
 import consent
 import auth
@@ -272,6 +273,13 @@ def export_ledger():
         "genesis_hash": ledger.GENESIS_HASH,
         "entries": ledger.export_chain(),
     }
+
+
+# ================================================================ Limits
+@app.get("/limits/status")
+def limits_status(_owner: bool = Depends(require_owner)):
+    """Blast-radius circuit breaker state: per-actor hourly counts + global daily total."""
+    return limits.get_status()
 
 
 # ================================================================ Policies

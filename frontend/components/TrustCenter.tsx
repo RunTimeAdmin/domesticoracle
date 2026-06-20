@@ -6,8 +6,9 @@ import {
   getLedger, verifyLedger, getPolicies, addPolicy, deletePolicy,
   getAgents, revokeAgent, restoreAgent, getApprovals, resolveApproval,
   getMode, setMode, getSummary, getDevices, controlDevice, dryrunPolicy,
+  getLimitsStatus,
   LedgerEntry, ChainStatus, Policy, Agent, PendingApproval,
-  PolicyMode, LedgerSummary, Device, DryRunResult,
+  PolicyMode, LedgerSummary, Device, DryRunResult, LimitsStatus,
 } from "@/lib/api";
 
 type Tab = "pending" | "ledger" | "devices" | "policies" | "agents";
@@ -42,13 +43,14 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [dryRunBusy, setDryRunBusy] = useState(false);
 
+  const [limitsStatus, setLimitsStatus] = useState<LimitsStatus | null>(null);
   const [verifying, setVerifying] = useState(false);
 
   const reload = useCallback(async () => {
     try {
-      const [p, l, pol, ag, m, s, dev] = await Promise.all([
+      const [p, l, pol, ag, m, s, dev, lim] = await Promise.all([
         getApprovals(), getLedger(), getPolicies(), getAgents(),
-        getMode(), getSummary(), getDevices(),
+        getMode(), getSummary(), getDevices(), getLimitsStatus(),
       ]);
       setPending(p);
       setLedger(l);
@@ -58,6 +60,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
       setSummary(s);
       setDevices(dev.devices);
       setHaLive(dev.configured);
+      setLimitsStatus(lim);
     } catch {
       // backend not reachable; leave panels empty
     }
@@ -175,6 +178,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
                   chain={chain}
                   mode={mode}
                   summary={summary}
+                  limitsStatus={limitsStatus}
                   onChangeMode={changeMode}
                   onVerify={verifyChain}
                   verifying={verifying}
@@ -330,13 +334,96 @@ function Stat({ value, label, tone }: { value: number; label: string; tone?: "am
   );
 }
 
+function LimitsCard({ status }: { status: LimitsStatus }) {
+  const dailyPct = status.daily_cap > 0 ? status.daily_count / status.daily_cap : 0;
+  const barColor =
+    dailyPct >= 1 ? "bg-red-500"
+    : dailyPct >= 0.8 ? "bg-amber-500"
+    : "bg-emerald-500";
+  const textColor =
+    dailyPct >= 1 ? "text-red-700"
+    : dailyPct >= 0.8 ? "text-amber-700"
+    : "text-charcoal-soft";
+
+  const actorEntries = Object.entries(status.actor_counts_this_hour);
+
+  return (
+    <div className="rounded-2xl border border-charcoal-soft/15 bg-white/40 p-3">
+      <p className="mb-2 text-xs font-medium text-charcoal-soft">Blast-radius limits</p>
+
+      {/* Daily cap bar */}
+      <div className="mb-3">
+        <div className="mb-1 flex items-center justify-between text-[11px]">
+          <span className="text-charcoal-soft">Today's actions</span>
+          <span className={`font-medium ${textColor}`}>
+            {status.daily_count} / {status.daily_cap > 0 ? status.daily_cap : "∞"}
+          </span>
+        </div>
+        {status.daily_cap > 0 && (
+          <div className="h-1.5 overflow-hidden rounded-full bg-charcoal-soft/10">
+            <div
+              className={`h-full rounded-full transition-all ${barColor}`}
+              style={{ width: `${Math.min(100, dailyPct * 100).toFixed(1)}%` }}
+            />
+          </div>
+        )}
+        {dailyPct >= 1 && (
+          <p className="mt-1 text-[10px] text-red-600">
+            Daily cap reached — all actions held until midnight UTC.
+          </p>
+        )}
+      </div>
+
+      {/* Per-actor this hour */}
+      {actorEntries.length > 0 && (
+        <div>
+          <p className="mb-1 text-[10px] text-charcoal-soft/70 uppercase tracking-wide">
+            This hour
+            {status.actor_hourly_limit > 0 && ` (limit: ${status.actor_hourly_limit}/actor)`}
+          </p>
+          <div className="space-y-1">
+            {actorEntries.map(([actor, count]) => {
+              const actorPct = status.actor_hourly_limit > 0
+                ? count / status.actor_hourly_limit : 0;
+              const hit = status.actor_hourly_limit > 0 && count >= status.actor_hourly_limit;
+              return (
+                <div key={actor} className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-[10px] text-charcoal-soft">
+                    {actor}
+                  </span>
+                  <span className={`shrink-0 text-[10px] font-medium ${hit ? "text-red-600" : "text-charcoal"}`}>
+                    {count}{status.actor_hourly_limit > 0 && ` / ${status.actor_hourly_limit}`}
+                  </span>
+                  {status.actor_hourly_limit > 0 && (
+                    <div className="w-12 h-1 overflow-hidden rounded-full bg-charcoal-soft/10 shrink-0">
+                      <div
+                        className={`h-full rounded-full ${hit ? "bg-red-500" : actorPct >= 0.8 ? "bg-amber-500" : "bg-emerald-500"}`}
+                        style={{ width: `${Math.min(100, actorPct * 100).toFixed(1)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {actorEntries.length === 0 && (
+        <p className="text-[10px] text-charcoal-soft/60">No guarded actions this hour.</p>
+      )}
+    </div>
+  );
+}
+
 function LedgerTab({
-  entries, chain, mode, summary, onChangeMode, onVerify, verifying,
+  entries, chain, mode, summary, limitsStatus, onChangeMode, onVerify, verifying,
 }: {
   entries: LedgerEntry[];
   chain: ChainStatus | null;
   mode: PolicyMode | null;
   summary: LedgerSummary | null;
+  limitsStatus: LimitsStatus | null;
   onChangeMode: (m: PolicyMode) => void;
   onVerify: () => void;
   verifying: boolean;
@@ -344,6 +431,7 @@ function LedgerTab({
   return (
     <div className="space-y-3">
       <ModeControl mode={mode} onChange={onChangeMode} />
+      {limitsStatus && <LimitsCard status={limitsStatus} />}
       {summary && <SummaryCard summary={summary} />}
       <div className="flex items-center gap-2">
         {chain ? (

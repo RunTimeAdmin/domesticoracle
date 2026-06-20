@@ -22,6 +22,7 @@ re-checked at approval time so a rule change since the hold is honoured (no stal
 import os, json, sqlite3, time, threading, secrets
 
 import ledger
+import limits
 import policy
 import crypto
 import risk
@@ -61,6 +62,7 @@ def _migrate_approvals(conn: sqlite3.Connection) -> None:
 def init_db() -> None:
     ledger.init_db()
     policy.init_db()
+    limits.init_table()
     with _connect() as conn:
         conn.execute(
             """
@@ -208,7 +210,13 @@ def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
         return {"status": "denied", "reason": "That agent has been revoked.",
                 "result": None, "approval_id": None, "ledger_id": entry["id"]}
 
-    decision, reason = policy.evaluate(actor_id, action, args)
+    # Blast-radius circuit breaker: per-actor hourly limit + global daily cap.
+    # Exceeding either forces HOLD — the owner still has final say via the approval queue.
+    _rate_ok, _rate_reason = limits.check_and_record(actor_id)
+    if not _rate_ok:
+        decision, reason = policy.HOLD, _rate_reason
+    else:
+        decision, reason = policy.evaluate(actor_id, action, args)
     mode = policy.get_mode()
     cat, rk = risk.category(action), risk.score(action, args, decision)
 

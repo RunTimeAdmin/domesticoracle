@@ -187,3 +187,15 @@ export interface DryRunResult {
 
 export const dryrunPolicy = (action: string, args: Record<string, unknown>) =>
   postJSON<DryRunResult>("/policy/dryrun", { action, args });
+
+export interface LimitsStatus {
+  actor_hourly_limit: number;
+  daily_cap: number;
+  today: string;
+  daily_count: number;
+  daily_remaining: number | null;
+  current_hour_bucket: number;
+  actor_counts_this_hour: Record<string, number>;
+}
+
+export const getLimitsStatus = () => getJSON<LimitsStatus>("/limits/status");
