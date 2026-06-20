@@ -28,6 +28,7 @@ Trust layer (all routes from Ora, unchanged):
   POST   /agents/register    register an external agent  [owner]
   POST   /agent/act          governed entry point for external agents
   GET    /provenance/patterns   injection pattern registry  [owner]
+  GET    /mcp/info             MCP server status + tool list + client config  [owner]
 
 [owner] endpoints require the X-Ora-Owner header. The Oracle agent can never present it.
 """
@@ -36,7 +37,7 @@ from pathlib import Path
 from collections import OrderedDict, deque
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, Cookie, Response
+from fastapi import FastAPI, Depends, HTTPException, Cookie, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -58,6 +59,7 @@ import consent
 import auth
 import sessions
 import home_assistant as ha
+import mcp_server as _mcp
 from auth import require_owner
 
 # Initialise tables and print the owner token on first run.
@@ -99,6 +101,10 @@ def _get_claude() -> "_Anthropic | None":
     return _claude
 
 app = FastAPI(title="Domestic Oracle", version="1.0.0")
+
+# Mount MCP SSE server unless explicitly disabled via ORA_MCP_ENABLED=false.
+if os.getenv("ORA_MCP_ENABLED", "true").lower() not in ("false", "0", "no"):
+    app.mount("/mcp", _mcp.build_asgi_app(mount_path="/mcp"))
 
 
 @app.on_event("startup")
@@ -415,6 +421,31 @@ def keys_backup(_owner: bool = Depends(require_owner)):
             "Store this offline and securely. "
             "Anyone with the private key can sign new ledger entries as this server."
         ),
+    }
+
+
+# ================================================================ MCP info
+@app.get("/mcp/info")
+def mcp_info(request: Request, _owner: bool = Depends(require_owner)):
+    """MCP server status, tool list, and ready-to-paste client config."""
+    enabled = os.getenv("ORA_MCP_ENABLED", "true").lower() not in ("false", "0", "no")
+    token_required = bool(os.getenv("ORA_MCP_TOKEN", "").strip())
+    base = str(request.base_url).rstrip("/")
+    sse_url = f"{base}/mcp/sse"
+    return {
+        "enabled": enabled,
+        "sse_url": sse_url,
+        "actor_id": _mcp.MCP_ACTOR,
+        "token_required": token_required,
+        "tools": _mcp.TOOLS_META,
+        "claude_desktop_config": {
+            "mcpServers": {
+                "echobond": {
+                    "url": sse_url,
+                    "transport": "sse",
+                }
+            }
+        },
     }
 
 

@@ -263,3 +263,20 @@ export interface ProvenancePattern {
 
 export const getProvenancePatterns = () =>
   getJSON<{ patterns: ProvenancePattern[]; scanner_version: number }>("/provenance/patterns");
+
+export interface McpToolMeta {
+  name: string;
+  guarded: boolean;
+  description: string;
+}
+
+export interface McpInfo {
+  enabled: boolean;
+  sse_url: string;
+  actor_id: string;
+  token_required: boolean;
+  tools: McpToolMeta[];
+  claude_desktop_config: Record<string, unknown>;
+}
+
+export const getMcpInfo = () => getJSON<McpInfo>("/mcp/info");

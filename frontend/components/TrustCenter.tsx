@@ -7,9 +7,10 @@ import {
   getAgents, revokeAgent, restoreAgent, getApprovals, resolveApproval,
   getMode, setMode, getSummary, getDevices, controlDevice, dryrunPolicy,
   getLimitsStatus, getKeysStatus, rotateKey, backupKey, getMonitorStatus,
+  getMcpInfo,
   LedgerEntry, ChainStatus, Policy, Agent, PendingApproval,
   PolicyMode, LedgerSummary, Device, DryRunResult, LimitsStatus,
-  KeysStatus, KeyBackup, MonitorStatus, ProvenanceRecord,
+  KeysStatus, KeyBackup, MonitorStatus, ProvenanceRecord, McpInfo,
 } from "@/lib/api";
 
 type Tab = "pending" | "ledger" | "devices" | "policies" | "agents" | "keys";
@@ -48,14 +49,15 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
   const [limitsStatus, setLimitsStatus] = useState<LimitsStatus | null>(null);
   const [keysStatus, setKeysStatus] = useState<KeysStatus | null>(null);
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatus | null>(null);
+  const [mcpInfo, setMcpInfo] = useState<McpInfo | null>(null);
   const [verifying, setVerifying] = useState(false);
 
   const reload = useCallback(async () => {
     try {
-      const [p, l, pol, ag, m, s, dev, lim, ks, mon] = await Promise.all([
+      const [p, l, pol, ag, m, s, dev, lim, ks, mon, mcp] = await Promise.all([
         getApprovals(), getLedger(), getPolicies(), getAgents(),
         getMode(), getSummary(), getDevices(), getLimitsStatus(), getKeysStatus(),
-        getMonitorStatus(),
+        getMonitorStatus(), getMcpInfo(),
       ]);
       setPending(p);
       setLedger(l);
@@ -68,6 +70,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
       setLimitsStatus(lim);
       setKeysStatus(ks);
       setMonitorStatus(mon);
+      setMcpInfo(mcp);
     } catch {
       // backend not reachable; leave panels empty
     }
@@ -218,6 +221,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
               {tab === "agents" && (
                 <AgentsTab
                   agents={agents}
+                  mcpInfo={mcpInfo}
                   onRevoke={async (id) => { await revokeAgent(id); reload(); }}
                   onRestore={async (id) => { await restoreAgent(id); reload(); }}
                 />
@@ -862,15 +866,109 @@ function PoliciesTab({
   );
 }
 
+function McpCard({ info }: { info: McpInfo }) {
+  const [copied, setCopied] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
+  const configJson = JSON.stringify(info.claude_desktop_config, null, 2);
+
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="rounded-2xl border border-charcoal-soft/15 bg-white/40 p-3">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-medium text-charcoal-soft">MCP server</p>
+        <span className={`h-2 w-2 rounded-full ${info.enabled ? "bg-emerald-500" : "bg-charcoal-soft/30"}`} />
+      </div>
+
+      {!info.enabled ? (
+        <p className="text-[11px] text-charcoal-soft/70">
+          Disabled. Set <code className="font-mono">ORA_MCP_ENABLED=true</code> to enable.
+        </p>
+      ) : (
+        <>
+          {/* SSE URL */}
+          <div className="mb-2 flex items-center gap-1.5">
+            <code className="min-w-0 flex-1 truncate rounded bg-charcoal-soft/8 px-2 py-1 text-[10px] font-mono text-charcoal">
+              {info.sse_url}
+            </code>
+            <button
+              onClick={() => copy(info.sse_url)}
+              className="shrink-0 rounded-full border border-charcoal-soft/20 px-2 py-1 text-[10px] text-charcoal-soft hover:bg-charcoal-soft/5"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+
+          {/* Auth badge */}
+          {info.token_required && (
+            <p className="mb-2 text-[10px] text-amber-700">
+              Token auth active — supply <code className="font-mono">X-Ora-Mcp-Token</code> header.
+            </p>
+          )}
+
+          {/* Tools */}
+          <div className="mb-2">
+            <p className="mb-1 text-[10px] font-medium text-charcoal-soft/70 uppercase tracking-wide">
+              Exposed tools
+            </p>
+            <div className="space-y-0.5">
+              {info.tools.map((t) => (
+                <div key={t.name} className="flex items-center gap-2">
+                  <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${t.guarded ? "bg-amber-400" : "bg-emerald-400"}`} />
+                  <span className="font-mono text-[10px] text-charcoal font-medium shrink-0">{t.name}</span>
+                  <span className="text-[10px] text-charcoal-soft/70 truncate">{t.description}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-1 text-[9px] text-charcoal-soft/50">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 mr-1" />amber = consent-gated
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 ml-2 mr-1" />green = read-only
+            </p>
+          </div>
+
+          {/* Claude Desktop config */}
+          <button
+            onClick={() => setShowConfig((v) => !v)}
+            className="text-[10px] text-charcoal-soft hover:text-charcoal"
+          >
+            {showConfig ? "Hide" : "Show"} Claude Desktop config ↓
+          </button>
+          {showConfig && (
+            <div className="mt-1.5">
+              <pre className="overflow-x-auto rounded-lg bg-charcoal/5 p-2 text-[10px] font-mono text-charcoal leading-relaxed">
+                {configJson}
+              </pre>
+              <button
+                onClick={() => copy(configJson)}
+                className="mt-1 text-[10px] text-charcoal-soft hover:text-charcoal"
+              >
+                Copy JSON
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function AgentsTab({
-  agents, onRevoke, onRestore,
+  agents, mcpInfo, onRevoke, onRestore,
 }: {
   agents: Agent[];
+  mcpInfo: McpInfo | null;
   onRevoke: (id: string) => void;
   onRestore: (id: string) => void;
 }) {
   return (
     <div className="space-y-3">
+      {mcpInfo && <McpCard info={mcpInfo} />}
       {agents.map((a) => (
         <div key={a.id} className="flex items-center justify-between rounded-xl border border-charcoal-soft/15 bg-white/40 p-3">
           <div>
