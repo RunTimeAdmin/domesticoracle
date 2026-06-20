@@ -64,12 +64,28 @@ export async function checkSession(): Promise<boolean> {
 }
 
 // ---- Types ----
+export interface ProvenanceSignal {
+  pattern_id: string;
+  description: string;
+  excerpt: string;
+  source_id: string;
+}
+
+export interface ProvenanceRecord {
+  sources: { type: string; id: string }[];
+  signals: ProvenanceSignal[];
+  suspicious: boolean;
+  scanned_at: number;
+  scanner_version: number;
+}
+
 export interface LedgerEntry {
   id: number;
   ts: number;
   actor_id: string;
   action: string;
   args_summary: string;
+  args_json?: string;
   decision: string;
   status: string;
   outcome: string;
@@ -239,3 +255,11 @@ export interface KeyBackup {
 export const getKeysStatus = () => getJSON<KeysStatus>("/keys/status");
 export const rotateKey = () => postJSON<{ new_pub_hex: string; retired_pub_hex: string; rotated_at: number; rotation_count: number }>("/keys/rotate");
 export const backupKey = () => getJSON<KeyBackup>("/keys/backup");
+
+export interface ProvenancePattern {
+  pattern_id: string;
+  description: string;
+}
+
+export const getProvenancePatterns = () =>
+  getJSON<{ patterns: ProvenancePattern[]; scanner_version: number }>("/provenance/patterns");

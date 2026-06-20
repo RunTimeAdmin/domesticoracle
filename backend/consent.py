@@ -25,6 +25,7 @@ import ledger
 import limits
 import policy
 import crypto
+import provenance as prov_mod
 import risk
 from db import connect as _connect
 
@@ -193,20 +194,27 @@ def _summarize(args: dict) -> str:
     return ", ".join(f"{k}={v}" for k, v in (args or {}).items()) or "(no details)"
 
 
-def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
+def request_action(actor_id: str, action: str, args: dict, execute,
+                   sources: list[dict] | None = None) -> dict:
     """Run an action through the gate. The single chokepoint for every guarded effect.
 
     `execute` is a zero-arg callable performing the real work for the allow-now path.
+    `sources` is an optional list of content sources that influenced this action:
+        [{"type": str, "id": str, "content": str (optional)}]
+    Each source is scanned for injection signals; results are stored in the ledger
+    entry under args_json["_provenance"] and covered by the Ed25519 signature.
+
     Returns {"status", "reason", "result", "approval_id", "ledger_id"}.
     """
     args = args or {}
     summary = _summarize(args)
+    prov = prov_mod.scan_sources(sources) if sources else None
 
     agent = _agent(actor_id)
     if agent and agent["status"] == "revoked":
         rk = risk.score(action, args, "deny")
         entry = ledger.append(actor_id, action, summary, "deny", "blocked",
-                              "Actor is revoked.", risk.category(action), rk, args=args)
+                              "Actor is revoked.", risk.category(action), rk, args=args, provenance=prov)
         return {"status": "denied", "reason": "That agent has been revoked.",
                 "result": None, "approval_id": None, "ledger_id": entry["id"]}
 
@@ -223,18 +231,18 @@ def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
     if decision in (policy.DENY, policy.HOLD) and mode != policy.ENFORCED:
         result = execute()
         note = f"[{mode}] would {decision} ({reason}). Ran because enforcement is off. Result: {result}"
-        entry = ledger.append(actor_id, action, summary, decision, "executed", note, cat, rk, args=args)
+        entry = ledger.append(actor_id, action, summary, decision, "executed", note, cat, rk, args=args, provenance=prov)
         return {"status": "executed",
                 "reason": f"(Observed in {mode} mode — this would have been a '{decision}': {reason})",
                 "result": str(result), "approval_id": None, "ledger_id": entry["id"]}
 
     if decision == policy.DENY:
-        entry = ledger.append(actor_id, action, summary, decision, "blocked", reason, cat, rk, args=args)
+        entry = ledger.append(actor_id, action, summary, decision, "blocked", reason, cat, rk, args=args, provenance=prov)
         return {"status": "denied", "reason": reason,
                 "result": None, "approval_id": None, "ledger_id": entry["id"]}
 
     if decision == policy.HOLD:
-        entry = ledger.append(actor_id, action, summary, decision, "pending", reason, cat, rk, args=args)
+        entry = ledger.append(actor_id, action, summary, decision, "pending", reason, cat, rk, args=args, provenance=prov)
         approval_id = "apr_" + secrets.token_hex(6)
         with _lock, _connect() as conn:
             conn.execute(
@@ -249,7 +257,7 @@ def request_action(actor_id: str, action: str, args: dict, execute) -> dict:
 
     # allow
     result = execute()
-    entry = ledger.append(actor_id, action, summary, decision, "executed", str(result), cat, rk, args=args)
+    entry = ledger.append(actor_id, action, summary, decision, "executed", str(result), cat, rk, args=args, provenance=prov)
     return {"status": "executed", "reason": reason, "result": str(result),
             "approval_id": None, "ledger_id": entry["id"]}
 

@@ -27,6 +27,7 @@ Trust layer (all routes from Ora, unchanged):
   POST   /approvals/{id}/resolve   approve or deny  [owner]
   POST   /agents/register    register an external agent  [owner]
   POST   /agent/act          governed entry point for external agents
+  GET    /provenance/patterns   injection pattern registry  [owner]
 
 [owner] endpoints require the X-Ora-Owner header. The Oracle agent can never present it.
 """
@@ -52,6 +53,7 @@ import ledger
 import limits
 import monitor
 import policy
+import provenance
 import consent
 import auth
 import sessions
@@ -414,6 +416,13 @@ def keys_backup(_owner: bool = Depends(require_owner)):
             "Anyone with the private key can sign new ledger entries as this server."
         ),
     }
+
+
+# ============================================================== Provenance
+@app.get("/provenance/patterns")
+def provenance_patterns(_owner: bool = Depends(require_owner)):
+    """Full injection-pattern registry used by the scanner."""
+    return {"patterns": provenance.patterns(), "scanner_version": provenance.SCANNER_VERSION}
 
 
 # ================================================================ Policies

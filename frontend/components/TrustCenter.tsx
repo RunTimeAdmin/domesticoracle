@@ -9,7 +9,7 @@ import {
   getLimitsStatus, getKeysStatus, rotateKey, backupKey, getMonitorStatus,
   LedgerEntry, ChainStatus, Policy, Agent, PendingApproval,
   PolicyMode, LedgerSummary, Device, DryRunResult, LimitsStatus,
-  KeysStatus, KeyBackup, MonitorStatus,
+  KeysStatus, KeyBackup, MonitorStatus, ProvenanceRecord,
 } from "@/lib/api";
 
 type Tab = "pending" | "ledger" | "devices" | "policies" | "agents" | "keys";
@@ -480,6 +480,119 @@ function MonitorCard({ status }: { status: MonitorStatus }) {
   );
 }
 
+function parseProvenance(args_json?: string): ProvenanceRecord | null {
+  if (!args_json) return null;
+  try {
+    const j = JSON.parse(args_json);
+    return j._provenance ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function ProvenanceBadge({ prov }: { prov: ProvenanceRecord }) {
+  const [open, setOpen] = useState(false);
+  const hasSigs = prov.signals.length > 0;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        title={hasSigs ? `${prov.signals.length} injection signal(s)` : "Content scanned — clean"}
+        className={`flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium transition ${
+          hasSigs
+            ? "bg-amber-50 text-amber-700 border border-amber-200"
+            : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+        }`}
+      >
+        {/* Shield icon */}
+        <svg width="10" height="11" viewBox="0 0 12 14" fill="none" className="shrink-0">
+          <path d="M6 1L1 3.5V7C1 10 3.5 12.5 6 13C8.5 12.5 11 10 11 7V3.5L6 1Z"
+            fill={hasSigs ? "#d97706" : "#059669"} fillOpacity="0.15"
+            stroke={hasSigs ? "#d97706" : "#059669"} strokeWidth="1.2" />
+          {hasSigs && (
+            <text x="6" y="9.5" textAnchor="middle" fontSize="7" fill="#d97706" fontWeight="bold">!</text>
+          )}
+        </svg>
+        {hasSigs ? prov.signals.length : "✓"}
+      </button>
+
+      {open && (
+        <div
+          className="absolute right-0 top-6 z-10 w-64 rounded-xl border border-charcoal-soft/20 bg-white shadow-lg p-3 text-xs"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <p className="mb-1.5 font-medium text-charcoal">Provenance</p>
+
+          {prov.sources.length > 0 && (
+            <div className="mb-2">
+              <p className="text-[10px] font-medium text-charcoal-soft/70 uppercase tracking-wide mb-1">Sources</p>
+              <div className="space-y-0.5">
+                {prov.sources.map((s, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <span className="rounded bg-charcoal-soft/10 px-1 py-0.5 text-[10px] font-mono text-charcoal-soft">{s.type}</span>
+                    <span className="truncate text-[10px] text-charcoal-soft">{s.id}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {hasSigs ? (
+            <div>
+              <p className="text-[10px] font-medium text-amber-700/80 uppercase tracking-wide mb-1">Injection signals</p>
+              <div className="space-y-1.5">
+                {prov.signals.map((sig, i) => (
+                  <div key={i} className="rounded-lg border border-amber-200 bg-amber-50 p-1.5">
+                    <p className="font-medium text-amber-800">{sig.description}</p>
+                    <p className="mt-0.5 font-mono text-[10px] text-amber-700 break-all">{sig.excerpt}</p>
+                    {sig.source_id && (
+                      <p className="mt-0.5 text-[9px] text-amber-600/70 truncate">from: {sig.source_id}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-[10px] text-emerald-700">No injection signals detected.</p>
+          )}
+
+          <p className="mt-2 text-[9px] text-charcoal-soft/50">
+            Scanner v{prov.scanner_version} · {new Date(prov.scanned_at * 1000).toLocaleTimeString()}
+          </p>
+          <button
+            onClick={() => setOpen(false)}
+            className="mt-1.5 text-[10px] text-charcoal-soft hover:text-charcoal"
+          >
+            Close
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LedgerEntryCard({ entry: e }: { entry: LedgerEntry }) {
+  const prov = parseProvenance(e.args_json);
+  return (
+    <div className="rounded-xl border border-charcoal-soft/15 bg-white/40 p-3 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-charcoal truncate">{e.action}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {prov && <ProvenanceBadge prov={prov} />}
+          <StatusPill status={e.status} />
+        </div>
+      </div>
+      <p className="mt-0.5 text-xs text-charcoal-soft">{e.args_summary}</p>
+      {e.outcome && <p className="mt-1 text-xs text-charcoal-soft">{e.outcome}</p>}
+      <div className="mt-1.5 flex items-center justify-between text-[10px] text-charcoal-soft/70">
+        <span>{e.actor_id}</span>
+        <span title={e.hash}>#{e.id} · {e.hash.slice(0, 10)}…</span>
+      </div>
+    </div>
+  );
+}
+
 function LedgerTab({
   entries, chain, mode, summary, limitsStatus, monitorStatus, onChangeMode, onVerify, verifying,
 }: {
@@ -527,20 +640,7 @@ function LedgerTab({
       {entries.length === 0 ? (
         <Empty text="No activity yet." />
       ) : (
-        entries.map((e) => (
-          <div key={e.id} className="rounded-xl border border-charcoal-soft/15 bg-white/40 p-3 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="font-medium text-charcoal">{e.action}</span>
-              <StatusPill status={e.status} />
-            </div>
-            <p className="mt-0.5 text-xs text-charcoal-soft">{e.args_summary}</p>
-            {e.outcome && <p className="mt-1 text-xs text-charcoal-soft">{e.outcome}</p>}
-            <div className="mt-1.5 flex items-center justify-between text-[10px] text-charcoal-soft/70">
-              <span>{e.actor_id}</span>
-              <span title={e.hash}>#{e.id} · {e.hash.slice(0, 10)}…</span>
-            </div>
-          </div>
-        ))
+        entries.map((e) => <LedgerEntryCard key={e.id} entry={e} />)
       )}
     </div>
   );

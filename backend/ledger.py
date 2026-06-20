@@ -127,13 +127,20 @@ def _write_anchor(entry_id: int, entry_hash: str) -> None:
 
 def append(actor_id: str, action: str, args_summary: str,
            decision: str, status: str, outcome: str = "",
-           category: str = "", risk: int = 0, args: dict = None) -> dict:
+           category: str = "", risk: int = 0, args: dict = None,
+           provenance: dict = None) -> dict:
     """Append a new entry: link it to the chain head, sign it, and anchor it.
 
     `args` is stored as canonical JSON and included in the signed payload.
     `args_summary` is kept for display. `category` and `risk` are now also signed.
+    `provenance` is the _provenance record from provenance.scan_sources(); when
+    present it is merged into args_json under "_provenance" and covered by the
+    signature, so it cannot be stripped without breaking the chain.
     """
-    args_json_str = json.dumps(args or {}, sort_keys=True, separators=(",", ":"))
+    combined = dict(args or {})
+    if provenance:
+        combined["_provenance"] = provenance
+    args_json_str = json.dumps(combined, sort_keys=True, separators=(",", ":"))
     with _lock, _connect() as conn:
         row = conn.execute("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1").fetchone()
         prev_hash = row["hash"] if row else GENESIS_HASH
