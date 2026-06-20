@@ -30,7 +30,7 @@ Trust layer (all routes from Ora, unchanged):
 
 [owner] endpoints require the X-Ora-Owner header. The Oracle agent can never present it.
 """
-import os, json, sys
+import os, json, sys, time
 from pathlib import Path
 from collections import OrderedDict, deque
 
@@ -46,9 +46,11 @@ _BACKEND = Path(__file__).parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+import asyncio
 import crypto
 import ledger
 import limits
+import monitor
 import policy
 import consent
 import auth
@@ -95,6 +97,11 @@ def _get_claude() -> "_Anthropic | None":
     return _claude
 
 app = FastAPI(title="Domestic Oracle", version="1.0.0")
+
+
+@app.on_event("startup")
+async def _startup():
+    asyncio.create_task(monitor.verify_loop())
 
 _origins = os.getenv(
     "ALLOWED_ORIGINS",
@@ -186,10 +193,78 @@ def session_status(_owner: bool = Depends(require_owner)):
     return {"authenticated": True}
 
 
-# ================================================================ Chat
+# ================================================================ Health / observability
 @app.get("/health")
 def health():
-    return {"status": "ok", "agent": "domestic-oracle"}
+    """Readiness probe used by Docker healthcheck and load balancers.
+
+    Checks three operational prerequisites:
+      db           — can we query the database?
+      signing_key  — is the Ed25519 signing key loadable?
+      anchor_dir   — is the anchor directory writable?
+
+    Returns HTTP 200 if db + signing_key are OK (app is functional).
+    Returns HTTP 503 if either prerequisite fails.
+    Chain integrity result from the background verifier is included in the
+    body but does NOT drive the HTTP status — a broken chain needs human
+    investigation, not a Docker restart loop.
+    """
+    checks: dict = {}
+
+    try:
+        from db import connect as _connect_health
+        _connect_health().execute("SELECT 1").fetchone()
+        checks["db"] = {"ok": True}
+    except Exception as exc:
+        checks["db"] = {"ok": False, "error": str(exc)}
+
+    try:
+        crypto.server_public_key_hex()
+        checks["signing_key"] = {"ok": True}
+    except Exception as exc:
+        checks["signing_key"] = {"ok": False, "error": str(exc)}
+
+    try:
+        anchor_dir = os.path.dirname(ledger.ANCHOR_FILE)
+        os.makedirs(anchor_dir, exist_ok=True)
+        probe = os.path.join(anchor_dir, ".health_probe")
+        with open(probe, "w") as _f:
+            _f.write("")
+        os.unlink(probe)
+        checks["anchor_dir"] = {"ok": True}
+    except Exception as exc:
+        checks["anchor_dir"] = {"ok": False, "error": str(exc)}
+
+    last = monitor.last_result()
+    checks["chain_integrity"] = last if last else {"ok": None, "note": "Pending first scheduled check."}
+
+    operational = checks["db"]["ok"] and checks["signing_key"]["ok"]
+    any_critical = not checks["db"]["ok"] or not checks["signing_key"]["ok"] or (
+        last and last.get("ok") is False
+    )
+    status = "ok" if not any_critical else "degraded"
+
+    return JSONResponse(
+        {"status": status, "agent": "domestic-oracle", "checks": checks},
+        status_code=200 if operational else 503,
+    )
+
+
+@app.get("/monitor/status")
+def monitor_status(_owner: bool = Depends(require_owner)):
+    """Scheduled integrity verifier state — for the Trust Center."""
+    last = monitor.last_result()
+    now = time.time()
+    interval = monitor.VERIFY_INTERVAL
+    next_in: float | None = None
+    if last and last.get("checked_at"):
+        elapsed = now - last["checked_at"]
+        next_in = max(0.0, interval - elapsed)
+    return {
+        "last_result": last,
+        "verify_interval_seconds": interval,
+        "next_check_in_seconds": next_in,
+    }
 
 
 @app.get("/history/{user_id}")

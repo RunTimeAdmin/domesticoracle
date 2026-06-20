@@ -6,10 +6,10 @@ import {
   getLedger, verifyLedger, getPolicies, addPolicy, deletePolicy,
   getAgents, revokeAgent, restoreAgent, getApprovals, resolveApproval,
   getMode, setMode, getSummary, getDevices, controlDevice, dryrunPolicy,
-  getLimitsStatus, getKeysStatus, rotateKey, backupKey,
+  getLimitsStatus, getKeysStatus, rotateKey, backupKey, getMonitorStatus,
   LedgerEntry, ChainStatus, Policy, Agent, PendingApproval,
   PolicyMode, LedgerSummary, Device, DryRunResult, LimitsStatus,
-  KeysStatus, KeyBackup,
+  KeysStatus, KeyBackup, MonitorStatus,
 } from "@/lib/api";
 
 type Tab = "pending" | "ledger" | "devices" | "policies" | "agents" | "keys";
@@ -47,13 +47,15 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
 
   const [limitsStatus, setLimitsStatus] = useState<LimitsStatus | null>(null);
   const [keysStatus, setKeysStatus] = useState<KeysStatus | null>(null);
+  const [monitorStatus, setMonitorStatus] = useState<MonitorStatus | null>(null);
   const [verifying, setVerifying] = useState(false);
 
   const reload = useCallback(async () => {
     try {
-      const [p, l, pol, ag, m, s, dev, lim, ks] = await Promise.all([
+      const [p, l, pol, ag, m, s, dev, lim, ks, mon] = await Promise.all([
         getApprovals(), getLedger(), getPolicies(), getAgents(),
         getMode(), getSummary(), getDevices(), getLimitsStatus(), getKeysStatus(),
+        getMonitorStatus(),
       ]);
       setPending(p);
       setLedger(l);
@@ -65,6 +67,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
       setHaLive(dev.configured);
       setLimitsStatus(lim);
       setKeysStatus(ks);
+      setMonitorStatus(mon);
     } catch {
       // backend not reachable; leave panels empty
     }
@@ -183,6 +186,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
                   mode={mode}
                   summary={summary}
                   limitsStatus={limitsStatus}
+                  monitorStatus={monitorStatus}
                   onChangeMode={changeMode}
                   onVerify={verifyChain}
                   verifying={verifying}
@@ -423,14 +427,68 @@ function LimitsCard({ status }: { status: LimitsStatus }) {
   );
 }
 
+function MonitorCard({ status }: { status: MonitorStatus }) {
+  const last = status.last_result;
+  const interval = Math.round(status.verify_interval_seconds / 60);
+  const nextIn = status.next_check_in_seconds;
+
+  const relTime = (ts: number) => {
+    const mins = Math.round((Date.now() / 1000 - ts) / 60);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}h ${mins % 60}m ago`;
+  };
+
+  const nextLabel = nextIn == null
+    ? "pending first check"
+    : nextIn < 60
+    ? "< 1 min"
+    : `${Math.round(nextIn / 60)}m`;
+
+  return (
+    <div className="rounded-2xl border border-charcoal-soft/15 bg-white/40 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-charcoal-soft">Integrity monitor</p>
+        <span className="text-[10px] text-charcoal-soft/60">every {interval}m · next {nextLabel}</span>
+      </div>
+
+      {!last ? (
+        <p className="mt-1.5 text-[11px] text-charcoal-soft/70">
+          First check runs 30 s after startup.
+        </p>
+      ) : last.ok ? (
+        <div className="mt-1.5 flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+          <span className="text-[11px] text-charcoal-soft">
+            {last.checked} entries verified · {relTime(last.checked_at)}
+          </span>
+        </div>
+      ) : (
+        <div className="mt-1.5 space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-red-500 shrink-0" />
+            <span className="text-[11px] font-medium text-red-700">Chain integrity failure</span>
+          </div>
+          <p className="text-[10px] text-red-600 pl-4">{last.reason}</p>
+          {last.broken_at && (
+            <p className="text-[10px] text-red-600 pl-4">Broken at entry #{last.broken_at}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LedgerTab({
-  entries, chain, mode, summary, limitsStatus, onChangeMode, onVerify, verifying,
+  entries, chain, mode, summary, limitsStatus, monitorStatus, onChangeMode, onVerify, verifying,
 }: {
   entries: LedgerEntry[];
   chain: ChainStatus | null;
   mode: PolicyMode | null;
   summary: LedgerSummary | null;
   limitsStatus: LimitsStatus | null;
+  monitorStatus: MonitorStatus | null;
   onChangeMode: (m: PolicyMode) => void;
   onVerify: () => void;
   verifying: boolean;
@@ -440,6 +498,7 @@ function LedgerTab({
       <ModeControl mode={mode} onChange={onChangeMode} />
       {limitsStatus && <LimitsCard status={limitsStatus} />}
       {summary && <SummaryCard summary={summary} />}
+      {monitorStatus && <MonitorCard status={monitorStatus} />}
       <div className="flex items-center gap-2">
         {chain ? (
           <div

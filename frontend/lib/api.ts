@@ -200,6 +200,22 @@ export interface LimitsStatus {
 
 export const getLimitsStatus = () => getJSON<LimitsStatus>("/limits/status");
 
+export interface MonitorResult {
+  ok: boolean | null;
+  checked: number;
+  broken_at: number | null;
+  reason: string;
+  checked_at: number;
+}
+
+export interface MonitorStatus {
+  last_result: MonitorResult | null;
+  verify_interval_seconds: number;
+  next_check_in_seconds: number | null;
+}
+
+export const getMonitorStatus = () => getJSON<MonitorStatus>("/monitor/status");
+
 export interface KeyEntry {
   pub_hex: string;
   rotated_in: number;
