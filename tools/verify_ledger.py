@@ -68,18 +68,56 @@ def _check_hash(e: dict) -> bool:
     return False
 
 
+def _build_pub_keys(data: dict) -> list:
+    """Build ordered list of Ed25519PublicKey objects to try for signature checks.
+
+    Exports from server >= key-rotation release include a 'keyset' list covering
+    all keys ever used. Older exports have only 'public_key_hex'. We try the
+    current key first (most entries), then retired keys in reverse-rotation order
+    (most-recently-retired is most likely to match older entries).
+    """
+    seen: set[str] = set()
+    keys: list = []
+
+    current = data.get("public_key_hex", "")
+    if current and current not in seen:
+        keys.append(Ed25519PublicKey.from_public_bytes(bytes.fromhex(current)))
+        seen.add(current)
+
+    for entry in reversed(data.get("keyset", [])):
+        ph = entry.get("pub_hex", "")
+        if ph and ph not in seen:
+            keys.append(Ed25519PublicKey.from_public_bytes(bytes.fromhex(ph)))
+            seen.add(ph)
+
+    return keys
+
+
+def _verify_sig(pub_keys: list, sig_hex: str, hash_str: str) -> bool:
+    """Return True if any known public key verifies the signature."""
+    for pub in pub_keys:
+        try:
+            pub.verify(bytes.fromhex(sig_hex), hash_str.encode("utf-8"))
+            return True
+        except InvalidSignature:
+            continue
+    return False
+
+
 def verify(export_path: str) -> bool:
     with open(export_path) as f:
         data = json.load(f)
 
-    pub_key_hex = data.get("public_key_hex", "")
-    if not pub_key_hex:
+    pub_keys = _build_pub_keys(data)
+    if not pub_keys:
         print("FAIL: export missing 'public_key_hex'")
         return False
 
-    pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pub_key_hex))
-    entries = data.get("entries", [])
+    keyset_size = len(data.get("keyset", []))
+    if keyset_size > 1:
+        print(f"  keyset: {len(pub_keys)} key(s) ({keyset_size - 1} retired)")
 
+    entries = data.get("entries", [])
     if not entries:
         print("OK: 0 entries — empty ledger.")
         return True
@@ -98,19 +136,19 @@ def verify(export_path: str) -> bool:
             print(f"FAIL  #{eid}  [{e['action']}]: chain break — prev_hash doesn't match")
             return False
 
-        # 3. Ed25519 signature: signed over the hex hash string, not the raw bytes
-        try:
-            pub.verify(bytes.fromhex(e["sig"]), e["hash"].encode("utf-8"))
-        except InvalidSignature:
-            print(f"FAIL  #{eid}  [{e['action']}]: signature invalid — forgery or key mismatch")
+        # 3. Ed25519 signature: try all known keys (handles pre-rotation entries)
+        if not _verify_sig(pub_keys, e["sig"], e["hash"]):
+            print(f"FAIL  #{eid}  [{e['action']}]: signature invalid — forgery or unknown key")
             return False
 
         prev_hash = e["hash"]
         print(f"  ok  #{eid}  {e['action']}  by {e['actor_id']}")
 
+    current_pub = data.get("public_key_hex", "")
     print(f"\nOK: {len(entries)} {'entry' if len(entries) == 1 else 'entries'} verified. "
           f"Chain is intact.")
-    print(f"    Public key: {pub_key_hex[:16]}…")
+    if current_pub:
+        print(f"    Active key: {current_pub[:16]}…")
     return True
 
 

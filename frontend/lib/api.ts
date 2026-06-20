@@ -199,3 +199,27 @@ export interface LimitsStatus {
 }
 
 export const getLimitsStatus = () => getJSON<LimitsStatus>("/limits/status");
+
+export interface KeyEntry {
+  pub_hex: string;
+  rotated_in: number;
+  rotated_out: number | null;
+  active: boolean;
+}
+
+export interface KeysStatus {
+  current_pub_hex: string;
+  rotation_count: number;
+  active_since: number | null;
+  history: KeyEntry[];
+}
+
+export interface KeyBackup {
+  private_key_hex: string;
+  public_key_hex: string;
+  warning: string;
+}
+
+export const getKeysStatus = () => getJSON<KeysStatus>("/keys/status");
+export const rotateKey = () => postJSON<{ new_pub_hex: string; retired_pub_hex: string; rotated_at: number; rotation_count: number }>("/keys/rotate");
+export const backupKey = () => getJSON<KeyBackup>("/keys/backup");

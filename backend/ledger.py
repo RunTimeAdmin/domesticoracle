@@ -309,6 +309,18 @@ def summary(days: int = 7) -> dict:
     }
 
 
+def _verify_entry_sig(entry: dict) -> bool:
+    """Try current key first, then retired keys (for pre-rotation entries)."""
+    sig = entry.get("sig", "")
+    if not sig:
+        return False
+    h = entry["hash"].encode("utf-8")
+    for pub_hex in crypto.all_public_keys():
+        if crypto.verify(h, sig, pub_hex):
+            return True
+    return False
+
+
 def verify_chain(full: bool = False) -> dict:
     """Verify hash links and Ed25519 signatures.
 
@@ -340,9 +352,7 @@ def verify_chain(full: bool = False) -> dict:
                     return {"valid": False, "checked": checked,
                             "broken_at": entry["id"],
                             "reason": "Entry contents do not match its hash."}
-            if not entry.get("sig") or not crypto.verify(
-                entry["hash"].encode("utf-8"), entry["sig"]
-            ):
+            if not _verify_entry_sig(entry):
                 return {"valid": False, "checked": checked,
                         "broken_at": entry["id"],
                         "reason": "Entry signature is missing or invalid (forged)."}

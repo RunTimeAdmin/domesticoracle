@@ -6,12 +6,13 @@ import {
   getLedger, verifyLedger, getPolicies, addPolicy, deletePolicy,
   getAgents, revokeAgent, restoreAgent, getApprovals, resolveApproval,
   getMode, setMode, getSummary, getDevices, controlDevice, dryrunPolicy,
-  getLimitsStatus,
+  getLimitsStatus, getKeysStatus, rotateKey, backupKey,
   LedgerEntry, ChainStatus, Policy, Agent, PendingApproval,
   PolicyMode, LedgerSummary, Device, DryRunResult, LimitsStatus,
+  KeysStatus, KeyBackup,
 } from "@/lib/api";
 
-type Tab = "pending" | "ledger" | "devices" | "policies" | "agents";
+type Tab = "pending" | "ledger" | "devices" | "policies" | "agents" | "keys";
 
 interface TrustCenterProps {
   open: boolean;
@@ -25,6 +26,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "devices", label: "Devices" },
   { id: "policies", label: "Policies" },
   { id: "agents", label: "Agents" },
+  { id: "keys", label: "Keys" },
 ];
 
 export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterProps) {
@@ -44,13 +46,14 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
   const [dryRunBusy, setDryRunBusy] = useState(false);
 
   const [limitsStatus, setLimitsStatus] = useState<LimitsStatus | null>(null);
+  const [keysStatus, setKeysStatus] = useState<KeysStatus | null>(null);
   const [verifying, setVerifying] = useState(false);
 
   const reload = useCallback(async () => {
     try {
-      const [p, l, pol, ag, m, s, dev, lim] = await Promise.all([
+      const [p, l, pol, ag, m, s, dev, lim, ks] = await Promise.all([
         getApprovals(), getLedger(), getPolicies(), getAgents(),
-        getMode(), getSummary(), getDevices(), getLimitsStatus(),
+        getMode(), getSummary(), getDevices(), getLimitsStatus(), getKeysStatus(),
       ]);
       setPending(p);
       setLedger(l);
@@ -61,6 +64,7 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
       setDevices(dev.devices);
       setHaLive(dev.configured);
       setLimitsStatus(lim);
+      setKeysStatus(ks);
     } catch {
       // backend not reachable; leave panels empty
     }
@@ -213,6 +217,9 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
                   onRevoke={async (id) => { await revokeAgent(id); reload(); }}
                   onRestore={async (id) => { await restoreAgent(id); reload(); }}
                 />
+              )}
+              {tab === "keys" && (
+                <KeysTab status={keysStatus} onRotated={reload} />
               )}
             </div>
           </motion.aside>
@@ -728,6 +735,170 @@ function AgentsTab({
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function KeysTab({ status, onRotated }: { status: KeysStatus | null; onRotated: () => void }) {
+  const [rotating, setRotating] = useState(false);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [backup, setBackup] = useState<KeyBackup | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [rotateError, setRotateError] = useState("");
+
+  const fmt = (ts: number) =>
+    new Date(ts * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+
+  const doRotate = async () => {
+    setRotating(true);
+    setRotateError("");
+    try {
+      await rotateKey();
+      setConfirmRotate(false);
+      onRotated();
+    } catch (e) {
+      setRotateError(e instanceof Error ? e.message : "Rotation failed.");
+    } finally {
+      setRotating(false);
+    }
+  };
+
+  const doBackup = async () => {
+    setBackupBusy(true);
+    try {
+      setBackup(await backupKey());
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  if (!status) return <Empty text="Loading key info…" />;
+
+  const pub = status.current_pub_hex;
+  const pubShort = `${pub.slice(0, 16)}…${pub.slice(-8)}`;
+
+  return (
+    <div className="space-y-4">
+      {/* Current key card */}
+      <div className="rounded-2xl border border-charcoal-soft/15 bg-white/40 p-4">
+        <p className="mb-1 text-xs font-medium text-charcoal-soft">Active signing key</p>
+        <p className="font-mono text-sm text-charcoal break-all">{pubShort}</p>
+        <div className="mt-2 flex items-center justify-between text-[11px] text-charcoal-soft">
+          <span>
+            {status.active_since ? `Active since ${fmt(status.active_since)}` : "Key age unknown"}
+          </span>
+          <span>
+            {status.rotation_count === 0
+              ? "Never rotated"
+              : `${status.rotation_count} rotation${status.rotation_count > 1 ? "s" : ""}`}
+          </span>
+        </div>
+      </div>
+
+      {/* Rotate */}
+      <div className="rounded-2xl border border-charcoal-soft/15 bg-white/40 p-3">
+        <p className="mb-1 text-xs font-medium text-charcoal-soft">Rotate signing key</p>
+        <p className="mb-3 text-[11px] text-charcoal-soft">
+          Generates a new key. Entries signed by the retired key remain
+          verifiable — the old public key is preserved in keyset.json.
+          Back up your key before rotating.
+        </p>
+        {!confirmRotate ? (
+          <button
+            onClick={() => setConfirmRotate(true)}
+            className="w-full rounded-full border border-amber-300 bg-amber-50 py-1.5 text-sm font-medium text-amber-700 hover:bg-amber-100"
+          >
+            Rotate key…
+          </button>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium text-red-600">
+              This will retire the current key. New entries will use a different key. Continue?
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={doRotate}
+                disabled={rotating}
+                className="flex-1 rounded-full bg-gradient-to-br from-red-500 to-red-600 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {rotating ? "Rotating…" : "Confirm rotation"}
+              </button>
+              <button
+                onClick={() => { setConfirmRotate(false); setRotateError(""); }}
+                className="flex-1 rounded-full border border-charcoal-soft/30 py-1.5 text-sm font-medium text-charcoal-soft"
+              >
+                Cancel
+              </button>
+            </div>
+            {rotateError && <p className="text-[10px] text-red-600">{rotateError}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Backup */}
+      <div className="rounded-2xl border border-charcoal-soft/15 bg-white/40 p-3">
+        <p className="mb-1 text-xs font-medium text-charcoal-soft">Backup private key</p>
+        <p className="mb-3 text-[11px] text-charcoal-soft">
+          Export the current private key for safekeeping. Store it offline —
+          never in the same place as the database. This action is logged.
+        </p>
+        {!backup ? (
+          <button
+            onClick={doBackup}
+            disabled={backupBusy}
+            className="w-full rounded-full border border-charcoal-soft/30 py-1.5 text-sm font-medium text-charcoal-soft hover:bg-charcoal-soft/5 disabled:opacity-50"
+          >
+            {backupBusy ? "Fetching…" : "Export key"}
+          </button>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-[10px] font-medium text-amber-700">
+              {backup.warning}
+            </p>
+            <textarea
+              readOnly
+              value={backup.private_key_hex}
+              rows={3}
+              onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+              className="w-full resize-none rounded-lg border border-charcoal-soft/20 bg-cream p-2 font-mono text-[10px] text-charcoal focus:outline-none"
+            />
+            <p className="text-[10px] text-charcoal-soft/60">
+              Click the box to select all, then copy. Clear this tab when done.
+            </p>
+            <button
+              onClick={() => setBackup(null)}
+              className="w-full rounded-full border border-charcoal-soft/30 py-1 text-xs font-medium text-charcoal-soft hover:bg-charcoal-soft/5"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Rotation history */}
+      {status.history.length > 1 && (
+        <div>
+          <p className="mb-2 text-[10px] uppercase tracking-wide text-charcoal-soft/70">
+            Key history
+          </p>
+          <div className="space-y-1.5">
+            {status.history.map((k) => (
+              <div
+                key={k.pub_hex}
+                className="flex items-center gap-2 rounded-xl border border-charcoal-soft/10 bg-white/30 px-3 py-2"
+              >
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${k.active ? "bg-emerald-500" : "bg-charcoal-soft/30"}`} />
+                <span className="flex-1 min-w-0 truncate font-mono text-[10px] text-charcoal-soft">
+                  {k.pub_hex.slice(0, 16)}…
+                </span>
+                <span className="shrink-0 text-[10px] text-charcoal-soft/60">
+                  {k.active ? "active" : k.rotated_out ? `until ${fmt(k.rotated_out)}` : "retired"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

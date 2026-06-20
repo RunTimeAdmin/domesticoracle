@@ -46,6 +46,7 @@ _BACKEND = Path(__file__).parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+import crypto
 import ledger
 import limits
 import policy
@@ -264,13 +265,14 @@ def ledger_summary(days: int = 7):
 def export_ledger():
     """Full chain export for independent verification.
 
-    The response includes the server's public key so a skeptic can re-verify
-    every hash and Ed25519 signature without running this server.
-    Feed the output to tools/verify_ledger.py.
+    Includes the full keyset so the standalone verifier (tools/verify_ledger.py)
+    can check entries signed by retired keys without needing the live server.
     """
+    info = crypto.keyset_info()
     return {
-        "public_key_hex": crypto.server_public_key_hex(),
+        "public_key_hex": info["current_pub_hex"],
         "genesis_hash": ledger.GENESIS_HASH,
+        "keyset": info["history"],
         "entries": ledger.export_chain(),
     }
 
@@ -280,6 +282,63 @@ def export_ledger():
 def limits_status(_owner: bool = Depends(require_owner)):
     """Blast-radius circuit breaker state: per-actor hourly counts + global daily total."""
     return limits.get_status()
+
+
+# ================================================================ Key management
+@app.get("/keys/status")
+def keys_status(_owner: bool = Depends(require_owner)):
+    """Current signing key info and rotation history (public keys only)."""
+    return crypto.keyset_info()
+
+
+@app.post("/keys/rotate")
+def keys_rotate(_owner: bool = Depends(require_owner)):
+    """Generate a new Ed25519 signing key and retire the current one.
+
+    Historical entries remain verifiable — the retired public key is stored in
+    keyset.json and used as a fallback during chain verification.
+    Back up your current key before rotating if you haven't already.
+    """
+    result = crypto.rotate_server_key()
+    ledger.append(
+        actor_id="ora.system",
+        action="key_rotation",
+        args_summary=f"retired {result['retired_pub_hex'][:16]}… → {result['new_pub_hex'][:16]}…",
+        decision="allow",
+        status="executed",
+        outcome=f"Key rotated. {result['rotation_count']} key(s) now retired.",
+        category="governance",
+        risk=0,
+    )
+    return result
+
+
+@app.get("/keys/backup")
+def keys_backup(_owner: bool = Depends(require_owner)):
+    """Export current private key hex for offline backup.
+
+    This action is logged to the audit ledger. Store the returned hex securely
+    (password manager or encrypted file) — anyone with it can sign new ledger
+    entries as this server.
+    """
+    ledger.append(
+        actor_id="ora.system",
+        action="key_backup_export",
+        args_summary="owner exported signing key for backup",
+        decision="allow",
+        status="executed",
+        outcome="Private key exported via owner-authenticated API.",
+        category="governance",
+        risk=0,
+    )
+    return {
+        "private_key_hex": crypto.export_private_key_hex(),
+        "public_key_hex": crypto.server_public_key_hex(),
+        "warning": (
+            "Store this offline and securely. "
+            "Anyone with the private key can sign new ledger entries as this server."
+        ),
+    }
 
 
 # ================================================================ Policies
