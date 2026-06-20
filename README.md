@@ -205,36 +205,35 @@ The agent model is configured in `config.yaml`. Default: `claude-sonnet-4-6`.
 
 ## Email integration (AtomicMail)
 
-Domestic Oracle ships with built-in email via [AtomicMail](https://atomicmail.ai), an agent-native email service built on [JMAP](https://jmap.io/) (RFC 8620/8621).
+**This is optional.** The backend starts and runs without it. Skip this section if you don't want the agent to send or receive email.
 
-### One-time setup
+If you do set it up, the Oracle gets a dedicated `oracle@atomicmail.ai` inbox — a real email address it can send from, read, and reply to. It does not connect to your personal Gmail or any existing account.
+
+### What you get
+
+| Capability | How it works |
+|------------|-------------|
+| Agent sends email | You say "email David about the meeting" in chat; the agent composes it and it goes to your approval queue |
+| Agent reads inbox | You ask "what's in my inbox?" and it returns subjects and previews |
+| Agent replies | You say "reply to the last email from Sarah"; it drafts a reply and holds it for approval |
+| All outgoing email gated | No email leaves without your explicit approval in the Trust Center |
+| Full audit trail | Every send, reply, and inbox read is in the ledger |
+
+### Setup (one command, needs Node.js 18+)
 
 ```bash
 npx --package=@atomicmail/agent-skill atomicmail register --username oracle
 ```
 
-This runs a proof-of-work registration and writes credentials to `~/.atomicmail/credentials.json`. The Oracle picks them up automatically on next start.
+This does a proof-of-work registration with AtomicMail's servers (no account creation, no password, no credit card) and writes auth credentials to `~/.atomicmail/`. The backend picks them up automatically on next start — no config change needed.
 
-### What it does
+> **Credentials stay local.** The files in `~/.atomicmail/` are on your machine only and are not committed to git.
 
-| Tool | Tier | What it does |
-|------|------|-------------|
-| `send_email` | GUARDED | Sends an email; held for approval by default policy |
-| `reply_to_email` | GUARDED | Replies to a message by ID; held for approval |
-| `read_inbox` | SAFE | Reads recent inbox; logged but never held |
+### Default behaviour
 
-Outgoing email goes through the same consent gate as device commands and purchases. The default seed policy blocks all outgoing email until the owner approves each message in the Trust Center. Change this by adding a permissive rule via `POST /policies` or the Trust Center UI.
+By default, every outgoing email is held for your approval in the Trust Center (Pending tab), same as device commands and purchases. Reading the inbox is never held.
 
-### Example policy: auto-allow email to a trusted address
-
-```json
-{
-  "rule_type": "action_deny",
-  "params": { "action": "send_email" }
-}
-```
-
-Replace with a `time_window` or `spend_limit` variant to allow email within specific windows. See the [API reference](#api-reference) for policy schema.
+To let the agent send email without approval during a specific window, add a `time_window` policy via the Trust Center or `POST /policies`. To permanently block email entirely, add an `action_deny` policy for `send_email`.
 
 ---
 
