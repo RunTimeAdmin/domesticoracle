@@ -139,11 +139,30 @@ export interface LedgerSummary {
   trust_load: number;
 }
 
+export interface DeviceAttributes {
+  brightness?: number;             // 0–255 for lights
+  color_temp?: number;             // mireds
+  rgb_color?: [number, number, number];
+  current_temperature?: number;
+  temperature?: number;            // target for climate
+  hvac_mode?: string;
+  min_temp?: number;
+  max_temp?: number;
+  unit_of_measurement?: string;
+  media_title?: string;
+  media_artist?: string;
+  volume_level?: number;           // 0.0–1.0
+  is_volume_muted?: boolean;
+  current_position?: number;       // 0–100 for covers
+  percentage?: number;             // for fans
+}
+
 export interface Device {
   entity_id: string;
   name: string;
   state: string;
   domain: string;
+  attributes?: DeviceAttributes;
 }
 
 // ---- Calls ----
@@ -188,11 +207,32 @@ export const getSummary = () => getJSON<LedgerSummary>("/ledger/summary");
 export const getDevices = () =>
   getJSON<{ configured: boolean; devices: Device[] }>("/devices");
 
-export const controlDevice = (device: string, action: string) =>
+export const controlDevice = (
+  device: string,
+  action: string,
+  extra?: { brightness?: number; temperature?: number }
+) =>
   postJSON<{ text: string; approval: unknown | null }>("/devices/control", {
     device,
     action,
+    ...extra,
   });
+
+export type DeviceEvent =
+  | { type: "snapshot"; devices: Device[] }
+  | { type: "state_changed"; entity_id: string; name: string; state: string; domain: string; attributes: DeviceAttributes };
+
+export function subscribeDeviceEvents(
+  onEvent: (e: DeviceEvent) => void,
+  onError?: () => void
+): () => void {
+  const es = new EventSource(`${API_URL}/devices/events`, { withCredentials: true });
+  es.onmessage = (e) => {
+    try { onEvent(JSON.parse(e.data)); } catch { /* malformed frame */ }
+  };
+  es.onerror = () => onError?.();
+  return () => es.close();
+}
 
 export interface DryRunResult {
   action: string;

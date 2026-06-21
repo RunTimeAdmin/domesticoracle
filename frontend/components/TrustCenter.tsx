@@ -7,9 +7,9 @@ import {
   getAgents, revokeAgent, restoreAgent, getApprovals, resolveApproval,
   getMode, setMode, getSummary, getDevices, controlDevice, dryrunPolicy,
   getLimitsStatus, getKeysStatus, rotateKey, backupKey, getMonitorStatus,
-  getMcpInfo,
+  getMcpInfo, subscribeDeviceEvents,
   LedgerEntry, ChainStatus, Policy, Agent, PendingApproval,
-  PolicyMode, LedgerSummary, Device, DryRunResult, LimitsStatus,
+  PolicyMode, LedgerSummary, Device, DeviceAttributes, DryRunResult, LimitsStatus,
   KeysStatus, KeyBackup, MonitorStatus, ProvenanceRecord, McpInfo,
 } from "@/lib/api";
 
@@ -97,8 +97,12 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
     }
   };
 
-  const control = async (device: string, action: string) => {
-    await controlDevice(device, action);
+  const control = async (
+    device: string,
+    action: string,
+    extra?: { brightness?: number; temperature?: number }
+  ) => {
+    await controlDevice(device, action, extra);
     await reload();
   };
 
@@ -196,7 +200,13 @@ export default function TrustCenter({ open, onClose, refreshKey }: TrustCenterPr
                 />
               )}
               {tab === "devices" && (
-                <DevicesTab devices={devices} live={haLive} onControl={control} />
+                <DevicesTab
+                  devices={devices}
+                  live={haLive}
+                  open={open}
+                  active={tab === "devices"}
+                  onControl={control}
+                />
               )}
               {tab === "policies" && (
                 <PoliciesTab
@@ -650,74 +660,290 @@ function LedgerTab({
   );
 }
 
-function deviceVerbs(domain: string, state: string): { label: string; action: string }[] {
+// HA state color map — exact values from home-assistant/frontend color.globals.ts
+function haStateColor(domain: string, state: string): { color: string; bg: string } {
+  const C = {
+    amber:  { color: "#f59e0b", bg: "rgba(245,158,11,0.13)"  },
+    cyan:   { color: "#00bcd4", bg: "rgba(0,188,212,0.13)"   },
+    green:  { color: "#4caf50", bg: "rgba(76,175,80,0.13)"   },
+    red:    { color: "#f44336", bg: "rgba(244,67,54,0.13)"   },
+    orange: { color: "#ff6f22", bg: "rgba(255,111,34,0.13)"  },
+    blue:   { color: "#2196f3", bg: "rgba(33,150,243,0.13)"  },
+    lblue:  { color: "#03a9f4", bg: "rgba(3,169,244,0.13)"   },
+    grey:   { color: "#9e9e9e", bg: "rgba(158,158,158,0.11)" },
+  };
+  if (domain === "light" || domain === "switch" || domain === "input_boolean")
+    return state === "on" ? C.amber : C.grey;
+  if (domain === "fan") return state === "on" ? C.cyan : C.grey;
   if (domain === "lock") {
-    return state === "locked"
-      ? [{ label: "Unlock", action: "unlock" }]
-      : [{ label: "Lock", action: "lock" }];
+    if (state === "locked") return C.green;
+    if (state === "unlocked") return C.red;
+    return C.grey;
   }
-  if (domain === "cover") {
-    return state === "open"
-      ? [{ label: "Close", action: "close" }]
-      : [{ label: "Open", action: "open" }];
+  if (domain === "cover") return state === "open" ? { color: "#926bc7", bg: "rgba(146,107,199,0.13)" } : C.grey;
+  if (domain === "climate") {
+    if (state === "heat") return C.orange;
+    if (state === "cool") return C.blue;
+    if (state === "auto" || state === "heat_cool") return C.green;
+    if (state === "fan_only") return C.cyan;
+    return C.grey;
   }
-  if (["light", "switch", "fan", "input_boolean", "media_player"].includes(domain)) {
-    return state === "on"
-      ? [{ label: "Turn off", action: "off" }]
-      : [{ label: "Turn on", action: "on" }];
-  }
-  return []; // climate, scene, script: shown read-only for now
+  if (domain === "media_player")
+    return state === "playing" || state === "on" ? C.lblue : C.grey;
+  if (domain === "scene" || domain === "script") return C.amber;
+  return C.grey;
 }
 
-const ON_STATES = new Set(["on", "open", "unlocked"]);
+// Inline SVG paths for each device domain (24×24 viewBox, Material Design)
+const DOMAIN_PATHS: Record<string, string> = {
+  light:
+    "M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7zm-3 18v1a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-1H9z",
+  switch:
+    "M17 7H7a5 5 0 0 0 0 10h10a5 5 0 0 0 0-10zm0 8a3 3 0 1 1 0-6 3 3 0 0 1 0 6z",
+  fan:
+    "M12 11a1 1 0 0 0-1 1 1 1 0 0 0 1 1 1 1 0 0 0 1-1 1 1 0 0 0-1-1zm0-9C7.03 2 4.87 6.31 7.75 9l1.31-1.31A5 5 0 0 1 12 7a5 5 0 0 1 2.94.69l1.31-1.31C19.13 3.69 16.97 2 12 2zm0 18c4.97 0 7.13-4.31 4.25-7l-1.31 1.31A5 5 0 0 1 12 17a5 5 0 0 1-2.94-.69l-1.31 1.31C4.87 20.31 7.03 22 12 22z",
+  lock_locked:
+    "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z",
+  lock_unlocked:
+    "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h2c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z",
+  cover:
+    "M20 11H4v2h16v-2zm-8-8L4 7v2l8-3.5L20 9V7l-8-4zm0 18v-2.5l-4 1.5V22h8v-2.5l-4-1.5z",
+  climate:
+    "M15 13V5a3 3 0 0 0-6 0v8a5 5 0 1 0 6 0zm-3 5a3 3 0 1 1 0-6 3 3 0 0 1 0 6z",
+  media_player:
+    "M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z",
+  input_boolean:
+    "M17 7H7a5 5 0 0 0 0 10h10a5 5 0 0 0 0-10zM7 15a3 3 0 1 1 0-6 3 3 0 0 1 0 6z",
+  scene:
+    "M12 3L1 9l4 2.18V17h2v-4.82l2 1.09V17c0 1.1.9 2 2 2s2-.9 2-2v-3.73l4-2.18V17h2V11.18L23 9 12 3z",
+  script:
+    "M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z",
+};
+
+function DomainIcon({ domain, state, size = 20 }: { domain: string; state: string; size?: number }) {
+  const key = domain === "lock"
+    ? (state === "locked" ? "lock_locked" : "lock_unlocked")
+    : domain;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d={DOMAIN_PATHS[key] ?? DOMAIN_PATHS.script} />
+    </svg>
+  );
+}
+
+// lock, cover, climate, media_player span both grid columns and use horizontal layout
+const WIDE_DOMAINS = new Set(["lock", "cover", "climate", "media_player"]);
+
+function brightnessPct(attrs?: DeviceAttributes): number | null {
+  if (attrs?.brightness == null) return null;
+  return Math.round((attrs.brightness / 255) * 100);
+}
+
+function DeviceCard({
+  device: d,
+  onControl,
+}: {
+  device: Device;
+  onControl: (entityId: string, action: string, extra?: { brightness?: number; temperature?: number }) => void;
+}) {
+  const attrs: DeviceAttributes = d.attributes ?? {};
+  const { color, bg } = haStateColor(d.domain, d.state);
+  const bPct = brightnessPct(attrs);
+  const [sliderVal, setSliderVal] = useState<number>(bPct ?? 100);
+  const [sliding, setSliding] = useState(false);
+
+  useEffect(() => {
+    if (!sliding && bPct != null) setSliderVal(bPct);
+  }, [bPct, sliding]);
+
+  const handleBrightness = (pct: number) => {
+    onControl(d.entity_id, "on", { brightness: Math.round((pct / 100) * 255) });
+  };
+
+  const handleTemp = (delta: number) => {
+    const cur = attrs.temperature ?? 70;
+    onControl(d.entity_id, "set_temperature", { temperature: Math.round((cur + delta) * 10) / 10 });
+  };
+
+  const toggleAction =
+    d.domain === "lock"         ? (d.state === "locked"   ? "unlock" : "lock")
+    : d.domain === "cover"      ? (d.state === "open"     ? "close"  : "open")
+    : d.domain === "media_player" ? (d.state === "playing" ? "pause"  : "play")
+    : d.state === "on"          ? "off" : "on";
+
+  const toggleLabel =
+    d.domain === "lock"         ? (d.state === "locked"   ? "Unlock" : "Lock")
+    : d.domain === "cover"      ? (d.state === "open"     ? "Close"  : "Open")
+    : d.domain === "media_player" ? (d.state === "playing" ? "Pause"  : "Play")
+    : d.state === "on"          ? "Turn off" : "Turn on";
+
+  const showToggle = d.domain !== "climate" && d.domain !== "scene" && d.domain !== "script";
+
+  const stateLabel = (() => {
+    if (d.domain === "climate" && attrs.hvac_mode) {
+      const cur = attrs.current_temperature != null
+        ? ` · ${attrs.current_temperature}${attrs.unit_of_measurement ?? "°"}` : "";
+      return `${attrs.hvac_mode}${cur}`;
+    }
+    if (d.domain === "light" && d.state === "on" && bPct != null) return `on · ${bPct}%`;
+    if (d.domain === "fan" && d.state === "on" && attrs.percentage != null) return `on · ${attrs.percentage}%`;
+    return d.state;
+  })();
+
+  const iconEl = (
+    <div
+      className="flex shrink-0 items-center justify-center rounded-full"
+      style={{ width: 36, height: 36, background: bg, color }}
+    >
+      <DomainIcon domain={d.domain} state={d.state} />
+    </div>
+  );
+
+  const actionBtn = showToggle && (
+    <button
+      onClick={() => onControl(d.entity_id, toggleAction)}
+      className="shrink-0 rounded-full border border-charcoal-soft/20 px-2.5 py-1 text-[11px] font-medium text-charcoal-soft hover:bg-charcoal-soft/5 transition-colors whitespace-nowrap"
+    >
+      {toggleLabel}
+    </button>
+  );
+
+  if (WIDE_DOMAINS.has(d.domain)) {
+    return (
+      <div className="rounded-xl border border-charcoal-soft/10 bg-white/60 p-3 space-y-2">
+        <div className="flex items-center gap-3">
+          {iconEl}
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-charcoal leading-tight truncate">{d.name}</p>
+            <p className="text-[11px] text-charcoal-soft mt-0.5 capitalize">{stateLabel}</p>
+          </div>
+          {actionBtn}
+        </div>
+
+        {d.domain === "climate" && attrs.temperature != null && (
+          <div className="flex items-center justify-between" style={{ paddingLeft: 48 }}>
+            <div>
+              <span className="text-sm font-medium" style={{ color }}>
+                {attrs.temperature}{attrs.unit_of_measurement ?? "°"}
+              </span>
+              <span className="ml-1 text-[11px] text-charcoal-soft/70">target</span>
+              {attrs.current_temperature != null && (
+                <span className="ml-2 text-[11px] text-charcoal-soft/50">
+                  · currently {attrs.current_temperature}{attrs.unit_of_measurement ?? "°"}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-1.5">
+              <button onClick={() => handleTemp(-1)} className="w-6 h-6 flex items-center justify-center rounded-full border border-charcoal-soft/20 text-sm text-charcoal-soft hover:bg-charcoal-soft/5 transition-colors">−</button>
+              <button onClick={() => handleTemp(+1)} className="w-6 h-6 flex items-center justify-center rounded-full border border-charcoal-soft/20 text-sm text-charcoal-soft hover:bg-charcoal-soft/5 transition-colors">+</button>
+            </div>
+          </div>
+        )}
+
+        {d.domain === "media_player" && attrs.media_title && (
+          <p className="text-[11px] text-charcoal-soft truncate" style={{ paddingLeft: 48 }}>
+            <span style={{ color }}>▶ </span>
+            {attrs.media_title}
+            {attrs.media_artist && <span className="text-charcoal-soft/60"> · {attrs.media_artist}</span>}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-charcoal-soft/10 bg-white/60 p-3 flex flex-col gap-2.5 h-full">
+      <div className="flex items-start justify-between gap-2">
+        {iconEl}
+        {actionBtn}
+      </div>
+      <div>
+        <p className="text-[13px] font-medium text-charcoal leading-tight truncate">{d.name}</p>
+        <p className="text-[11px] text-charcoal-soft mt-0.5 capitalize">{stateLabel}</p>
+      </div>
+      {d.domain === "light" && d.state === "on" && bPct != null && (
+        <div className="flex items-center gap-2 mt-auto">
+          <input
+            type="range"
+            min={1}
+            max={100}
+            step={1}
+            value={sliderVal}
+            onChange={(e) => { setSliderVal(+e.target.value); setSliding(true); }}
+            onMouseUp={(e) => { setSliding(false); handleBrightness(+(e.target as HTMLInputElement).value); }}
+            onTouchEnd={(e) => { setSliding(false); handleBrightness(+(e.target as HTMLInputElement).value); }}
+            className="flex-1 h-1 cursor-pointer"
+            style={{ accentColor: color }}
+          />
+          <span className="text-[10px] text-charcoal-soft/60 w-7 text-right shrink-0">{sliderVal}%</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function DevicesTab({
-  devices, live, onControl,
+  devices: initialDevices,
+  live,
+  open,
+  active,
+  onControl,
 }: {
   devices: Device[];
   live: boolean;
-  onControl: (entityId: string, action: string) => void;
+  open: boolean;
+  active: boolean;
+  onControl: (entityId: string, action: string, extra?: { brightness?: number; temperature?: number }) => void;
 }) {
+  const [devices, setDevices] = useState<Device[]>(initialDevices);
+
+  useEffect(() => {
+    setDevices(initialDevices);
+  }, [initialDevices]);
+
+  useEffect(() => {
+    if (!open || !active || !live) return;
+    const unsub = subscribeDeviceEvents((ev) => {
+      if (ev.type === "snapshot") {
+        setDevices(ev.devices);
+      } else if (ev.type === "state_changed") {
+        setDevices((prev) =>
+          prev.map((d) =>
+            d.entity_id === ev.entity_id
+              ? { ...d, state: ev.state, attributes: ev.attributes }
+              : d
+          )
+        );
+      }
+    });
+    return unsub;
+  }, [open, active, live]);
+
   return (
     <div className="space-y-3">
-      <div className="rounded-xl bg-charcoal-soft/5 px-3 py-2 text-[11px] text-charcoal-soft">
-        {live
-          ? "Connected to your Home Assistant. Actions run through the consent gate."
-          : "Showing a mock home (no Home Assistant connected). Actions still flow through the gate."}
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] text-charcoal-soft">
+          {live
+            ? "Connected to Home Assistant · state syncs in real time"
+            : "Mock home · set ORA_HA_URL + ORA_HA_TOKEN to connect a real instance"}
+        </p>
+        {live && (
+          <span className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 shrink-0 ml-3">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            Live
+          </span>
+        )}
       </div>
       {devices.length === 0 ? (
         <Empty text="No devices visible." />
       ) : (
-        devices.map((d) => {
-          const verbs = deviceVerbs(d.domain, d.state);
-          const lit = ON_STATES.has(d.state);
-          return (
-            <div
-              key={d.entity_id}
-              className="flex items-center justify-between rounded-xl border border-charcoal-soft/15 bg-white/40 p-3"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-charcoal">{d.name}</p>
-                <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-charcoal-soft">
-                  <span className={`h-1.5 w-1.5 rounded-full ${lit ? "bg-emerald-500" : "bg-charcoal-soft/40"}`} />
-                  {d.state}
-                  <span className="text-charcoal-soft/50">· {d.entity_id}</span>
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-1.5">
-                {verbs.map((v) => (
-                  <button
-                    key={v.action}
-                    onClick={() => onControl(d.entity_id, v.action)}
-                    className="rounded-full border border-rosegold/40 px-3 py-2 text-xs font-medium text-charcoal hover:bg-rosegold/10"
-                  >
-                    {v.label}
-                  </button>
-                ))}
-              </div>
+        <div className="grid grid-cols-2 gap-2">
+          {devices.map((d) => (
+            <div key={d.entity_id} className={WIDE_DOMAINS.has(d.domain) ? "col-span-2" : ""}>
+              <DeviceCard device={d} onControl={onControl} />
             </div>
-          );
-        })
+          ))}
+        </div>
       )}
     </div>
   );

@@ -84,6 +84,30 @@ MAX_USERS = 500
 _history: OrderedDict[str, deque] = OrderedDict()
 _claude: "_Anthropic | None" = None
 
+# Live state cache updated by the HA WebSocket listener (entity_id → device dict).
+_ha_state_cache: dict[str, dict] = {}
+# SSE clients waiting for device state_changed events.
+_sse_subscribers: set[asyncio.Queue] = set()
+
+
+async def _ha_event_handler(
+    entity_id: str, state: str, attrs: dict, domain: str, name: str
+) -> None:
+    """Called by the HA WebSocket listener on every controllable state_changed event."""
+    device = {
+        "entity_id": entity_id, "name": name,
+        "state": state, "domain": domain, "attributes": attrs,
+    }
+    _ha_state_cache[entity_id] = device
+    payload = json.dumps({"type": "state_changed", **device})
+    dead: set[asyncio.Queue] = set()
+    for q in list(_sse_subscribers):
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            dead.add(q)
+    _sse_subscribers.difference_update(dead)
+
 
 def _get_history(user_id: str) -> deque:
     if user_id in _history:
@@ -106,7 +130,10 @@ def _get_claude() -> "_Anthropic | None":
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     asyncio.create_task(monitor.verify_loop())
+    if ha.configured():
+        ha.start_ws_listener(_ha_event_handler)
     yield
+    ha.stop_ws_listener()
 
 
 app = FastAPI(title="Domestic Oracle", version="1.0.0", lifespan=_lifespan)
@@ -152,6 +179,8 @@ class ModeRequest(BaseModel):
 class DeviceControlRequest(BaseModel):
     device: str
     action: str
+    brightness: int | None = None    # 0-255 for lights
+    temperature: float | None = None  # target °F/°C for climate
 
 
 class RegisterAgentRequest(BaseModel):
@@ -572,17 +601,70 @@ def agent_act(req: AgentActRequest):
 # ================================================================ Devices
 @app.get("/devices")
 def get_devices():
-    return {"configured": ha.configured(), "devices": ha.list_devices()}
+    devices = ha.list_devices()
+    # Overlay any fresher state from the WebSocket cache.
+    for d in devices:
+        cached = _ha_state_cache.get(d["entity_id"])
+        if cached:
+            d["state"] = cached["state"]
+            d["attributes"] = cached["attributes"]
+    return {"configured": ha.configured(), "devices": devices}
+
+
+@app.get("/devices/events")
+async def device_events(_owner: bool = Depends(require_owner)):
+    """SSE stream of HA state_changed events for live device state in the Trust Center.
+
+    Sends an initial snapshot of all current devices, then pushes a JSON object
+    for every state_changed event received from the HA WebSocket.
+    """
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _sse_subscribers.add(q)
+
+    async def stream():
+        try:
+            # Initial snapshot so the client doesn't have to wait for the next change.
+            devices = ha.list_devices()
+            for d in devices:
+                cached = _ha_state_cache.get(d["entity_id"])
+                if cached:
+                    d["state"] = cached["state"]
+                    d["attributes"] = cached["attributes"]
+            yield f"data: {json.dumps({'type': 'snapshot', 'devices': devices})}\n\n"
+
+            while True:
+                try:
+                    payload = await asyncio.wait_for(q.get(), timeout=25)
+                    yield f"data: {payload}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _sse_subscribers.discard(q)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/devices/control")
 def control_device_endpoint(req: DeviceControlRequest, _owner: bool = Depends(require_owner)):
     """Control a device from the Trust Center — still routed through the consent gate."""
+    extra: dict = {}
+    if req.brightness is not None:
+        extra["brightness"] = max(0, min(255, req.brightness))
+    if req.temperature is not None:
+        extra["temperature"] = req.temperature
+
+    _device, _action, _extra = req.device, req.action, extra or None
     result = consent.request_action(
         actor_id="ora.home",
         action="control_device",
-        args={"device": req.device, "action": req.action},
-        execute=lambda: ha.control(req.device, req.action),
+        args={"device": _device, "action": _action, **extra},
+        execute=lambda: ha.control(_device, _action, _extra),
     )
     if result["status"] == "executed":
         return {"text": result["result"], "approval": None}
