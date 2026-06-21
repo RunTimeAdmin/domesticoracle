@@ -29,6 +29,11 @@ import provenance as prov_mod
 import risk
 from db import connect as _connect
 
+# Countersig agent registry — used when env vars are present, local SQLite otherwise.
+_CS_ENABLED = bool(os.getenv("COUNTERSIG_API_KEY") and os.getenv("COUNTERSIG_ORG_ID"))
+if _CS_ENABLED:
+    import countersig as _cs
+
 _lock = threading.Lock()
 
 # Re-execution hook for approved actions, registered by the tools layer (avoids a circular
@@ -118,6 +123,11 @@ def init_db() -> None:
 
 # --------------------------------------------------------------------------- agents
 def list_agents() -> list[dict]:
+    if _CS_ENABLED:
+        try:
+            return _cs.list_agents()
+        except Exception:
+            pass
     with _connect() as conn:
         rows = conn.execute(
             "SELECT id, name, status, kind, created FROM agents ORDER BY id ASC"
@@ -132,6 +142,17 @@ def _agent(actor_id: str) -> dict | None:
 
 
 def set_agent_status(actor_id: str, status: str) -> bool:
+    if _CS_ENABLED and status == "revoked":
+        try:
+            agent = _cs.get_agent(actor_id)
+            _cs.revoke_agent(
+                actor_id,
+                pubkey=agent.get("pubkey", ""),
+                signature="",
+                message=f"revoked via Domestic Oracle control plane",
+            )
+        except Exception:
+            pass
     with _lock, _connect() as conn:
         cur = conn.execute("UPDATE agents SET status = ? WHERE id = ?", (status, actor_id))
         conn.commit()

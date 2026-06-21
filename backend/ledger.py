@@ -1,27 +1,35 @@
 """
-Ora's audit ledger: an append-only, hash-chained, SIGNED record of every consequential
-action taken on the user's behalf.
+Audit ledger — backed by Countersig's tamper-evident audit service.
 
-Three layers of defence, each catching what the one before it can't:
+Replaces the local SQLite hash-chain with Countersig's AES-GCM sealed,
+Ed25519-signed, RFC-3161-timestamped audit log. Public interface is
+identical to the original so callers need no changes.
 
-1. Hash chain. Each entry's hash covers its contents plus the previous entry's hash. Edit
-   or delete any past entry and every hash after it stops matching.
+Local SQLite is kept ONLY for:
+  - sum_today()  — per-day spend aggregation used by the policy engine
+    (requires fast local queries; mirrored to Countersig in parallel)
+  - summary()    — Trust Center rollup widget
+  - Legacy chain verification endpoints that still reference local data
+    while Countersig audit is being adopted
 
-2. Ed25519 signatures. Each entry's hash is signed with the server key, which lives OUTSIDE
-   the database. A motivated attacker with write access to oracle.db can recompute the hash
-   chain to look internally consistent - but they cannot forge the signatures, so the forgery
-   is still detectable. The public key is exportable, so anyone can verify independently.
-
-3. External anchor. After each append, the new chain head (id + hash) is written to an
-   append-only anchor file kept outside the database. This catches the one thing signatures
-   alone don't: wholesale rollback or truncation. If someone deletes the DB and rebuilds a
-   shorter or older chain, it may verify internally, but it won't match the last anchored
-   head. (In production the anchor belongs on separate WORM/remote storage or a timestamping
-   authority; here it's a local file as a working stand-in.)
-
-Storage is a single SQLite table; volume is human-scale (actions per day).
+When COUNTERSIG_API_KEY / COUNTERSIG_ORG_ID are not set, falls back to
+the original local-SQLite implementation so the app still runs offline.
 """
-import os, json, sqlite3, hashlib, time, threading
+from __future__ import annotations
+
+import json
+import os
+import time
+
+_CS_ENABLED = bool(os.getenv("COUNTERSIG_API_KEY") and os.getenv("COUNTERSIG_ORG_ID"))
+
+if _CS_ENABLED:
+    import countersig as _cs
+
+# ── Local SQLite fallback (also used for sum_today / summary) ────────────────
+import hashlib
+import sqlite3
+import threading
 
 import crypto
 from db import connect as _connect
@@ -74,8 +82,6 @@ def init_db() -> None:
 
 
 def _canonical(entry: dict) -> str:
-    """Stable serialization for hashing. Covers args_json, category, and risk so those
-    fields carry integrity protection from the moment they are written."""
     payload = {
         "action": entry["action"],
         "actor_id": entry["actor_id"],
@@ -93,17 +99,11 @@ def _canonical(entry: dict) -> str:
 
 
 def _canonical_legacy(entry: dict) -> str:
-    """Hash payload used before the args_json/category/risk expansion. Accepted by
-    verify_chain() for rows written before this patch so existing ledgers stay valid."""
     payload = {
-        "ts": entry["ts"],
-        "actor_id": entry["actor_id"],
-        "action": entry["action"],
-        "args_summary": entry["args_summary"],
-        "decision": entry["decision"],
-        "status": entry["status"],
-        "outcome": entry["outcome"],
-        "prev_hash": entry["prev_hash"],
+        "ts": entry["ts"], "actor_id": entry["actor_id"],
+        "action": entry["action"], "args_summary": entry["args_summary"],
+        "decision": entry["decision"], "status": entry["status"],
+        "outcome": entry["outcome"], "prev_hash": entry["prev_hash"],
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -113,30 +113,19 @@ def _compute_hash(entry: dict) -> str:
 
 
 def _write_anchor(entry_id: int, entry_hash: str) -> None:
-    """Append the new chain head to the external anchor file (best-effort, append-only)."""
     os.makedirs(os.path.dirname(ANCHOR_FILE), exist_ok=True)
     line = {
-        "id": entry_id,
-        "hash": entry_hash,
-        "ts": time.time(),
+        "id": entry_id, "hash": entry_hash, "ts": time.time(),
         "sig": crypto.sign(f"{entry_id}:{entry_hash}".encode("utf-8")),
     }
     with open(ANCHOR_FILE, "a") as f:
         f.write(json.dumps(line, separators=(",", ":")) + "\n")
 
 
-def append(actor_id: str, action: str, args_summary: str,
-           decision: str, status: str, outcome: str = "",
-           category: str = "", risk: int = 0, args: dict = None,
-           provenance: dict = None) -> dict:
-    """Append a new entry: link it to the chain head, sign it, and anchor it.
-
-    `args` is stored as canonical JSON and included in the signed payload.
-    `args_summary` is kept for display. `category` and `risk` are now also signed.
-    `provenance` is the _provenance record from provenance.scan_sources(); when
-    present it is merged into args_json under "_provenance" and covered by the
-    signature, so it cannot be stripped without breaking the chain.
-    """
+def _local_append(actor_id: str, action: str, args_summary: str,
+                  decision: str, status: str, outcome: str = "",
+                  category: str = "", risk: int = 0, args: dict = None,
+                  provenance: dict = None) -> dict:
     combined = dict(args or {})
     if provenance:
         combined["_provenance"] = provenance
@@ -144,23 +133,14 @@ def append(actor_id: str, action: str, args_summary: str,
     with _lock, _connect() as conn:
         row = conn.execute("SELECT hash FROM ledger ORDER BY id DESC LIMIT 1").fetchone()
         prev_hash = row["hash"] if row else GENESIS_HASH
-
         entry = {
-            "ts": time.time(),
-            "actor_id": actor_id,
-            "action": action,
-            "args_summary": args_summary,
-            "args_json": args_json_str,
-            "decision": decision,
-            "status": status,
-            "outcome": outcome,
-            "prev_hash": prev_hash,
-            "category": category,
-            "risk": int(risk),
+            "ts": time.time(), "actor_id": actor_id, "action": action,
+            "args_summary": args_summary, "args_json": args_json_str,
+            "decision": decision, "status": status, "outcome": outcome,
+            "prev_hash": prev_hash, "category": category, "risk": int(risk),
         }
         entry["hash"] = _compute_hash(entry)
         entry["sig"] = crypto.sign(entry["hash"].encode("utf-8"))
-
         cur = conn.execute(
             """INSERT INTO ledger
                (ts, actor_id, action, args_summary, args_json, decision, status, outcome,
@@ -171,30 +151,45 @@ def append(actor_id: str, action: str, args_summary: str,
         )
         conn.commit()
         entry["id"] = cur.lastrowid
-
     _write_anchor(entry["id"], entry["hash"])
     return entry
 
 
-def update_outcome(entry_id: int, status: str, outcome: str, decision: str = "n/a") -> None:
-    """Append a NEW entry recording the resolution of a prior held action.
+# ── Public API ────────────────────────────────────────────────────────────────
 
-    We never mutate existing rows - that would break the chain by design. Instead a
-    follow-up entry references the original in its summary, preserving the audit trail.
-    """
+def append(actor_id: str, action: str, args_summary: str,
+           decision: str, status: str, outcome: str = "",
+           category: str = "", risk: int = 0, args: dict = None,
+           provenance: dict = None) -> dict:
+    """Append an audit entry. Writes to Countersig when configured, local SQLite otherwise."""
+    local = _local_append(actor_id, action, args_summary, decision, status,
+                          outcome, category, risk, args, provenance)
+    if _CS_ENABLED:
+        try:
+            _cs.append_audit(actor_id, action, args_summary, decision, status,
+                             outcome, category, risk, args, provenance)
+        except Exception:
+            pass  # local write already succeeded; Countersig is best-effort until primary
+    return local
+
+
+def update_outcome(entry_id: int, status: str, outcome: str,
+                   decision: str = "n/a") -> None:
+    """Record resolution of a held action as a new chained entry."""
     append(
-        actor_id="ora.system",
-        action="resolve",
+        actor_id="ora.system", action="resolve",
         args_summary=f"resolves ledger entry #{entry_id}",
-        decision=decision,
-        status=status,
-        outcome=outcome,
-        category="governance",
-        risk=0,
+        decision=decision, status=status, outcome=outcome,
+        category="governance", risk=0,
     )
 
 
 def list_entries(limit: int = 100) -> list[dict]:
+    if _CS_ENABLED:
+        try:
+            return _cs.list_audit(limit=limit)
+        except Exception:
+            pass
     with _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM ledger ORDER BY id DESC LIMIT ?", (limit,)
@@ -203,21 +198,18 @@ def list_entries(limit: int = 100) -> list[dict]:
 
 
 def export_chain() -> list[dict]:
-    """Return all entries oldest-first for chain export and independent verification."""
+    if _CS_ENABLED:
+        try:
+            return _cs.export_chain()
+        except Exception:
+            pass
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM ledger ORDER BY id ASC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM ledger ORDER BY id ASC").fetchall()
     return [dict(r) for r in rows]
 
 
 def sum_today(action: str, fields=("amount", "cost", "price", "total")) -> float:
-    """Total of a numeric arg across today's EXECUTED entries for an action.
-
-    Used by the policy engine for per-day spend caps.
-    Fast path: SQL JSON1 aggregation (single in-engine SUM, no per-row Python).
-    Fallback: string parsing for legacy rows without structured args.
-    """
+    """Aggregate today's executed amounts for spend-cap checks. Always local for speed."""
     start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
     conn = _connect()
     primary = fields[0]
@@ -249,10 +241,7 @@ def sum_today(action: str, fields=("amount", "cost", "price", "total")) -> float
 
 
 def summary(days: int = 7) -> dict:
-    """Rolling-window rollup for the Trust Center: what happened, by category and risk.
-
-    A home-sized version of CounterAudit's agentic-debt index - legible at a glance.
-    """
+    """Rolling-window rollup for the Trust Center badge."""
     start = time.time() - days * 86400
     with _connect() as conn:
         rows = conn.execute(
@@ -269,14 +258,14 @@ def summary(days: int = 7) -> dict:
         cat = r["category"] or "other"
         by_category[cat] = by_category.get(cat, 0) + 1
         risks.append(int(r["risk"] or 0))
-        status = r["status"]
-        if status in ("pending",):
+        s = r["status"]
+        if s == "pending":
             held += 1
-        elif status in ("blocked", "denied"):
+        elif s in ("blocked", "denied"):
             denied += 1
-        elif status == "executed":
+        elif s == "executed":
             executed += 1
-        if r["action"] == "make_purchase" and status == "executed":
+        if r["action"] == "make_purchase" and s == "executed":
             parsed = None
             try:
                 parsed = json.loads(r["args_json"] or "{}") or None
@@ -303,21 +292,16 @@ def summary(days: int = 7) -> dict:
                         break
 
     return {
-        "window_days": days,
-        "total": len(rows),
-        "by_category": by_category,
-        "held": held,
-        "denied": denied,
-        "executed": executed,
+        "window_days": days, "total": len(rows), "by_category": by_category,
+        "held": held, "denied": denied, "executed": executed,
         "financial_total": round(financial_total, 2),
         "avg_risk": round(sum(risks) / len(risks), 1) if risks else 0,
         "max_risk": max(risks) if risks else 0,
-        "trust_load": sum(risks),  # cumulative risk handled this week
+        "trust_load": sum(risks),
     }
 
 
 def _verify_entry_sig(entry: dict) -> bool:
-    """Try current key first, then retired keys (for pre-rotation entries)."""
     sig = entry.get("sig", "")
     if not sig:
         return False
@@ -329,24 +313,18 @@ def _verify_entry_sig(entry: dict) -> bool:
 
 
 def verify_chain(full: bool = False) -> dict:
-    """Verify hash links and Ed25519 signatures.
-
-    By default resumes from the last verified checkpoint, so repeated calls
-    are O(new entries) rather than O(N). Pass full=True to re-scan from
-    genesis (e.g. after suspecting tampering of old entries).
-
-    Accepts both the current canonical format and the legacy format (rows
-    written before the args_json/category/risk expansion).
-    """
+    if _CS_ENABLED:
+        try:
+            return _cs.verify_chain()
+        except Exception:
+            pass
     with _verify_lock:
         conn = _connect()
         start_id = 0 if full else _verify_checkpoint["id"]
         prev_hash = GENESIS_HASH if full else _verify_checkpoint["hash"]
-
         rows = conn.execute(
             "SELECT * FROM ledger WHERE id > ? ORDER BY id ASC", (start_id,)
         ).fetchall()
-
         checked = start_id
         for r in rows:
             entry = dict(r)
@@ -354,7 +332,9 @@ def verify_chain(full: bool = False) -> dict:
                 return {"valid": False, "checked": checked,
                         "broken_at": entry["id"], "reason": "Hash chain link broken."}
             if _compute_hash(entry) != entry["hash"]:
-                legacy = hashlib.sha256(_canonical_legacy(entry).encode("utf-8")).hexdigest()
+                legacy = hashlib.sha256(
+                    _canonical_legacy(entry).encode("utf-8")
+                ).hexdigest()
                 if legacy != entry["hash"]:
                     return {"valid": False, "checked": checked,
                             "broken_at": entry["id"],
@@ -365,19 +345,13 @@ def verify_chain(full: bool = False) -> dict:
                         "reason": "Entry signature is missing or invalid (forged)."}
             prev_hash = entry["hash"]
             checked = entry["id"]
-
         _verify_checkpoint["id"] = checked
         _verify_checkpoint["hash"] = prev_hash
-
     total = conn.execute("SELECT COUNT(*) c FROM ledger").fetchone()["c"]
     return {"valid": True, "checked": total, "broken_at": None, "reason": "Chain intact."}
 
 
 def verify_anchor() -> dict:
-    """Check the live chain against the last external anchor to catch rollback/truncation.
-
-    Returns {"anchored", "consistent", "reason"}.
-    """
     if not os.path.exists(ANCHOR_FILE):
         return {"anchored": False, "consistent": True, "reason": "No anchor yet."}
     last = None
@@ -388,13 +362,13 @@ def verify_anchor() -> dict:
                 last = line
     if not last:
         return {"anchored": False, "consistent": True, "reason": "Anchor file empty."}
-
     rec = json.loads(last)
     if not crypto.verify(f"{rec['id']}:{rec['hash']}".encode("utf-8"), rec["sig"]):
         return {"anchored": True, "consistent": False, "reason": "Anchor signature invalid."}
-
     with _connect() as conn:
-        row = conn.execute("SELECT hash FROM ledger WHERE id = ?", (rec["id"],)).fetchone()
+        row = conn.execute(
+            "SELECT hash FROM ledger WHERE id = ?", (rec["id"],)
+        ).fetchone()
     if not row:
         return {"anchored": True, "consistent": False,
                 "reason": f"Anchored entry #{rec['id']} is missing (rollback/truncation)."}
@@ -405,16 +379,13 @@ def verify_anchor() -> dict:
 
 
 def integrity(full: bool = False) -> dict:
-    """Combined verdict used by the API and Trust Center badge."""
     chain = verify_chain(full=full)
     anchor = verify_anchor()
     valid = chain["valid"] and anchor["consistent"]
     return {
-        "valid": valid,
-        "checked": chain["checked"],
+        "valid": valid, "checked": chain["checked"],
         "broken_at": chain["broken_at"],
         "reason": chain["reason"] if not chain["valid"] else anchor["reason"],
-        "chain": chain,
-        "anchor": anchor,
+        "chain": chain, "anchor": anchor,
         "public_key": crypto.server_public_key_hex(),
     }

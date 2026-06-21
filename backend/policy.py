@@ -1,23 +1,30 @@
 """
-Ora's policy engine: the rules that decide whether an action runs, waits for you,
-or is blocked outright.
+Policy engine — backed by Countersig when configured, local SQLite otherwise.
 
-A policy is a small structured rule. `evaluate()` runs an action's details against
-all active rules and returns the strictest verdict: deny beats hold beats allow.
-Rules are stored in SQLite so they survive restarts.
+When COUNTERSIG_API_KEY + COUNTERSIG_ORG_ID are set:
+  - evaluate()      → countersig.evaluate_policy()
+  - list/add/delete → countersig policy CRUD endpoints
+  - get/set_mode    → countersig policy settings
 
-Natural-language intake: `parse_policy("never spend more than $50")` asks Claude to
-translate plain English into one of the structured rule types below, so the user can
-set policy by talking instead of filling in forms. The parsed rule is always echoed
-back for confirmation before it takes effect.
+Locally managed:
+  - parse_policy()  — NL → structured rule via Claude (always local)
+  - Default rule seeding (still seeds to Countersig on first run when enabled)
+  - ALLOW / HOLD / DENY / mode constants (re-exported for callers)
 
-Rule types (Phase 1):
-  spend_limit     {"max_amount": 50}                 hold purchases over the cap
-  time_window     {"start_hour": 23, "end_hour": 6}  hold actions inside the window
-  action_deny     {"action": "send_message"}         block an action type outright
-  recipient_block {"recipient": "mom"}               block messages to a recipient
+The public function signatures are identical to the original so no callers change.
 """
-import os, json, sqlite3, time, datetime, threading
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import threading
+import time
+
+_CS_ENABLED = bool(os.getenv("COUNTERSIG_API_KEY") and os.getenv("COUNTERSIG_ORG_ID"))
+
+if _CS_ENABLED:
+    import countersig as _cs
 
 import ledger
 from db import connect as _connect
@@ -27,12 +34,12 @@ _cache_lock = threading.Lock()
 _policy_cache: list[dict] | None = None
 
 ALLOW, HOLD, DENY = "allow", "hold", "deny"
+ENFORCED, AUDIT_ONLY, PERMISSIVE = "enforced", "audit_only", "permissive"
+_MODES = {ENFORCED, AUDIT_ONLY, PERMISSIVE}
 _SEVERITY = {ALLOW: 0, HOLD: 1, DENY: 2}
 
 
-ENFORCED, AUDIT_ONLY, PERMISSIVE = "enforced", "audit_only", "permissive"
-_MODES = {ENFORCED, AUDIT_ONLY, PERMISSIVE}
-
+# ── Local DB init (always needed for offline fallback + cache) ────────────────
 
 def init_db() -> None:
     with _connect() as conn:
@@ -52,35 +59,11 @@ def init_db() -> None:
             "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         conn.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES ('policy_mode', ?)", (ENFORCED,)
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('policy_mode', ?)",
+            (ENFORCED,),
         )
         conn.commit()
     _seed_defaults()
-
-
-def get_mode() -> str:
-    """Current enforcement posture.
-
-    enforced    - holds and denies are enforced (default).
-    audit_only  - nothing is blocked; the gate records what it WOULD have done, so the owner
-                  can watch for a while before turning enforcement on. (Borrowed from Countersig.)
-    permissive  - allow everything, log minimally.
-    """
-    with _connect() as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key = 'policy_mode'").fetchone()
-    return row["value"] if row else ENFORCED
-
-
-def set_mode(mode: str) -> str:
-    if mode not in _MODES:
-        raise ValueError(f"Unknown policy mode: {mode}")
-    with _lock, _connect() as conn:
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('policy_mode', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (mode,)
-        )
-        conn.commit()
-    return mode
 
 
 _DEFAULTS = [
@@ -106,7 +89,53 @@ def _seed_defaults() -> None:
         conn.commit()
 
 
+# ── Mode ──────────────────────────────────────────────────────────────────────
+
+def get_mode() -> str:
+    if _CS_ENABLED:
+        try:
+            return _cs.get_mode()
+        except Exception:
+            pass
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'policy_mode'"
+        ).fetchone()
+    return row["value"] if row else ENFORCED
+
+
+def set_mode(mode: str) -> str:
+    if mode not in _MODES:
+        raise ValueError(f"Unknown policy mode: {mode}")
+    if _CS_ENABLED:
+        try:
+            result = _cs.set_mode(mode)
+            # Mirror locally so offline reads stay consistent.
+            _local_set_mode(mode)
+            return result
+        except Exception:
+            pass
+    return _local_set_mode(mode)
+
+
+def _local_set_mode(mode: str) -> str:
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('policy_mode', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (mode,)
+        )
+        conn.commit()
+    return mode
+
+
+# ── Policy CRUD ───────────────────────────────────────────────────────────────
+
 def list_policies() -> list[dict]:
+    if _CS_ENABLED:
+        try:
+            return _cs.list_policies()
+        except Exception:
+            pass
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM policies ORDER BY id ASC").fetchall()
     out = []
@@ -117,13 +146,13 @@ def list_policies() -> list[dict]:
     return out
 
 
-def _cached_policies() -> list[dict]:
-    """Return policies from the in-process cache, populating it on first call.
+def _invalidate_cache() -> None:
+    global _policy_cache
+    with _cache_lock:
+        _policy_cache = None
 
-    Policies change rarely but are evaluated on every guarded action. Caching
-    eliminates per-action DB reads and JSON decoding. Returns copies so callers
-    cannot mutate the cache. Invalidated by add_policy() and delete_policy().
-    """
+
+def _cached_policies() -> list[dict]:
     global _policy_cache
     with _cache_lock:
         if _policy_cache is None:
@@ -131,15 +160,18 @@ def _cached_policies() -> list[dict]:
         return [dict(p) for p in _policy_cache]
 
 
-def _invalidate_cache() -> None:
-    global _policy_cache
-    with _cache_lock:
-        _policy_cache = None
-
-
-def add_policy(rule_type: str, params: dict, label: str = "", source: str = "manual") -> dict:
-    if rule_type not in {"spend_limit", "time_window", "action_deny", "recipient_block"}:
+def add_policy(rule_type: str, params: dict, label: str = "",
+               source: str = "manual") -> dict:
+    valid = {"spend_limit", "time_window", "action_deny", "recipient_block"}
+    if rule_type not in valid:
         raise ValueError(f"Unknown rule_type: {rule_type}")
+    if _CS_ENABLED:
+        try:
+            result = _cs.add_policy(rule_type, params, label, source)
+            _invalidate_cache()
+            return result
+        except Exception:
+            pass
     with _lock, _connect() as conn:
         cur = conn.execute(
             "INSERT INTO policies (created, rule_type, params, source, label) VALUES (?,?,?,?,?)",
@@ -148,15 +180,35 @@ def add_policy(rule_type: str, params: dict, label: str = "", source: str = "man
         conn.commit()
         pid = cur.lastrowid
     _invalidate_cache()
-    return {"id": pid, "rule_type": rule_type, "params": params, "label": label, "source": source}
+    return {"id": pid, "rule_type": rule_type, "params": params,
+            "label": label, "source": source}
 
 
 def delete_policy(policy_id: int) -> bool:
+    if _CS_ENABLED:
+        try:
+            result = _cs.delete_policy(policy_id)
+            _invalidate_cache()
+            return result
+        except Exception:
+            pass
     with _lock, _connect() as conn:
         cur = conn.execute("DELETE FROM policies WHERE id = ?", (policy_id,))
         conn.commit()
     _invalidate_cache()
     return cur.rowcount > 0
+
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+
+def evaluate(actor_id: str, action: str, args: dict) -> tuple[str, str]:
+    """Return (decision, reason) for an action."""
+    if _CS_ENABLED:
+        try:
+            return _cs.evaluate_policy(actor_id, action, args)
+        except Exception:
+            pass
+    return _local_evaluate(actor_id, action, args)
 
 
 def _amount(args: dict) -> float:
@@ -172,18 +224,12 @@ def _amount(args: dict) -> float:
 def _in_window(start_hour: int, end_hour: int, now_hour: int) -> bool:
     if start_hour <= end_hour:
         return start_hour <= now_hour < end_hour
-    # Window wraps past midnight, e.g. 23 -> 6
     return now_hour >= start_hour or now_hour < end_hour
 
 
-def evaluate(actor_id: str, action: str, args: dict) -> tuple[str, str]:
-    """Return (decision, reason) for an action, applying the strictest matching rule."""
+def _local_evaluate(actor_id: str, action: str, args: dict) -> tuple[str, str]:
     args = args or {}
     decision, reason = ALLOW, "No policy restricts this action."
-    # Local time — time_window rules are entered in natural language ("after 11pm")
-    # and should match what the homeowner's wall clock reads.  The daily cap in
-    # limits.py resets at UTC midnight instead; that split is intentional and
-    # documented there.
     now_hour = datetime.datetime.now().hour
 
     for rule in _cached_policies():
@@ -226,17 +272,18 @@ def evaluate(actor_id: str, action: str, args: dict) -> tuple[str, str]:
     return decision, reason
 
 
-# --------------------------------------------------------------------------- NL intake
+# ── NL intake ─────────────────────────────────────────────────────────────────
+
 _PARSE_PROMPT = """You translate a user's plain-English household rule into ONE structured policy.
 
 Return ONLY a JSON object, no prose, with this shape:
 {"rule_type": "<type>", "params": {...}, "label": "<short restated rule>"}
 
 Valid rule_type values and their params:
-- "spend_limit":     {"max_amount": <number>, "max_per_day": <number, optional>}   limits on spending; max_amount is per purchase, max_per_day is a daily total
-- "time_window":     {"start_hour": <0-23>, "end_hour": <0-23>}  for "no actions after X / between X and Y" (use 24h hours)
-- "action_deny":     {"action": "make_purchase"|"send_message"|"control_device"}  to block an action type entirely
-- "recipient_block": {"recipient": "<name or 'all_contacts'>"}   to block messaging someone
+- "spend_limit":     {"max_amount": <number>, "max_per_day": <number, optional>}
+- "time_window":     {"start_hour": <0-23>, "end_hour": <0-23>}
+- "action_deny":     {"action": "make_purchase"|"send_message"|"control_device"}
+- "recipient_block": {"recipient": "<name or 'all_contacts'>"}
 
 Examples:
 "never spend more than 100 dollars" -> {"rule_type":"spend_limit","params":{"max_amount":100},"label":"Hold purchases over $100"}
@@ -247,19 +294,13 @@ User rule: {text}"""
 
 
 def parse_policy(text: str, claude) -> dict:
-    """Use Claude to convert plain English into a structured rule. Returns the rule dict.
-
-    `claude` is an Anthropic client. Raises ValueError if the result isn't usable.
-    """
-    import os as _os
-    model = _os.getenv("ORA_MODEL", _os.getenv("DORA_MODEL", "claude-haiku-4-5-20251001"))
+    """Convert plain English into a structured rule via Claude."""
+    model = os.getenv("ORA_MODEL", os.getenv("DORA_MODEL", "claude-haiku-4-5-20251001"))
     resp = claude.messages.create(
-        model=model,
-        max_tokens=300,
+        model=model, max_tokens=300,
         messages=[{"role": "user", "content": _PARSE_PROMPT.replace("{text}", text)}],
     )
     raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
-    # Strip code fences if the model added them.
     if raw.startswith("```"):
         raw = raw.strip("`")
         raw = raw[raw.find("{"):raw.rfind("}") + 1]

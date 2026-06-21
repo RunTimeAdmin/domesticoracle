@@ -21,6 +21,11 @@ langgraph>=0.4
 # ── Optional: web tools used by DeerFlow built-in web_fetch (Jina AI) ────────
 httpx>=0.28
 
+# ── Countersig NHI governance SDK ─────────────────────────────────────────────
+# pip install -e D:/REPO/Countersig/packages/python-sdk
+# or: pip install countersig  (once published to PyPI)
+countersig @ file:///D:/REPO/Countersig/packages/python-sdk
+
 # ── Optional: Mem0 memory (install separately if desired) ────────────────────
 # mem0ai>=0.1
 # chromadb>=0.5
